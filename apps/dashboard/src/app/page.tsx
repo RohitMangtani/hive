@@ -391,7 +391,11 @@ function ChatPopover({
           <div className="absolute bottom-3 right-4 flex flex-col gap-1.5 z-10">
             <button
               type="button"
-              onClick={() => lastAgentRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              onClick={() => {
+                if (lastAgentRef.current && scrollRef.current) {
+                  scrollRef.current.scrollTo({ top: lastAgentRef.current.offsetTop, behavior: "smooth" });
+                }
+              }}
               className="w-8 h-8 flex items-center justify-center rounded-full bg-[var(--bg-card)] border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text-muted)] transition-colors shadow-lg"
               title="Jump to latest message"
             >↑</button>
