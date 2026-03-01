@@ -212,6 +212,8 @@ function ChatPopover({
   onSend: (msg: string) => boolean; onDismiss: () => void; onClose: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastAgentRef = useRef<HTMLDivElement>(null);
+  const [showScrollNav, setShowScrollNav] = useState(false);
   const [kbOffset, setKbOffset] = useState(0);
   const color = dotColor(worker);
   const canSend = worker.managed || !!worker.tty;
@@ -221,6 +223,18 @@ function ChatPopover({
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [entries.length]);
+
+  // Show scroll nav buttons when user scrolls away from bottom
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setShowScrollNav(distFromBottom > 100);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
   // Push popover above iOS virtual keyboard.
   // Init immediately (catches keyboard-already-open), listen to resize+scroll,
@@ -286,9 +300,10 @@ function ChatPopover({
         </div>
 
         {/* Messages — scrolling dismisses iOS keyboard (like iMessage) */}
+        <div className="relative flex-1 min-h-0">
         <div
           ref={scrollRef}
-          className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0 overscroll-contain"
+          className="absolute inset-0 overflow-y-auto p-4 space-y-3 overscroll-contain"
           onTouchMove={() => {
             const el = document.activeElement as HTMLElement | null;
             if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) el.blur();
@@ -299,6 +314,11 @@ function ChatPopover({
           )}
           {(() => {
             const rendered: React.ReactNode[] = [];
+            // Find the index of the last agent message for ref attachment
+            let lastAgentIdx = -1;
+            for (let j = entries.length - 1; j >= 0; j--) {
+              if (entries[j].role === "agent") { lastAgentIdx = j; break; }
+            }
             let i = 0;
             while (i < entries.length) {
               const entry = entries[i];
@@ -332,8 +352,9 @@ function ChatPopover({
                   </details>
                 );
               } else {
+                const isLastAgent = i === lastAgentIdx;
                 rendered.push(
-                  <div key={i} className="group/msg">
+                  <div key={i} className="group/msg" ref={isLastAgent ? lastAgentRef : undefined}>
                     <div className="relative bg-[var(--bg-panel)] border border-[var(--border)] rounded-lg px-4 py-3 text-[16px] leading-relaxed">
                       <button
                         type="button"
@@ -363,6 +384,25 @@ function ChatPopover({
               </div>
             </div>
           )}
+        </div>
+
+        {/* Scroll navigation — jump to latest message or back to bottom */}
+        {showScrollNav && (
+          <div className="absolute bottom-3 right-4 flex flex-col gap-1.5 z-10">
+            <button
+              type="button"
+              onClick={() => lastAgentRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="w-8 h-8 flex items-center justify-center rounded-full bg-[var(--bg-card)] border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text-muted)] transition-colors shadow-lg"
+              title="Jump to latest message"
+            >↑</button>
+            <button
+              type="button"
+              onClick={() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }}
+              className="w-8 h-8 flex items-center justify-center rounded-full bg-[var(--bg-card)] border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text-muted)] transition-colors shadow-lg"
+              title="Scroll to bottom"
+            >↓</button>
+          </div>
+        )}
         </div>
 
         {/* Input area */}
