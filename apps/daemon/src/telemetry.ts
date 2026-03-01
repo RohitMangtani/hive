@@ -184,6 +184,10 @@ export class TelemetryReceiver {
     return recentSlice.every((t) => t === last);
   }
 
+  notifyExternal(worker: WorkerState): void {
+    this.notify(worker);
+  }
+
   private notify(worker: WorkerState): void {
     for (const listener of this.listeners) {
       listener(worker.id, worker);

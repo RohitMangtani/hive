@@ -1,5 +1,4 @@
 import { WebSocketServer, WebSocket } from "ws";
-import { randomUUID } from "crypto";
 import type { TelemetryReceiver } from "./telemetry.js";
 import type { ProcessManager } from "./process-mgr.js";
 import type { DaemonMessage, DaemonResponse } from "./types.js";
@@ -9,8 +8,7 @@ export class WsServer {
   private telemetry: TelemetryReceiver;
   private procMgr: ProcessManager;
   private port: number;
-  private token: string;
-  private authenticated = new Set<WebSocket>();
+  private clients = new Set<WebSocket>();
 
   constructor(
     telemetry: TelemetryReceiver,
@@ -20,9 +18,7 @@ export class WsServer {
     this.telemetry = telemetry;
     this.procMgr = procMgr;
     this.port = port;
-    this.token = randomUUID();
 
-    // Forward telemetry updates to all connected clients
     this.telemetry.onUpdate((workerId, worker) => {
       this.broadcast({
         type: "worker_update",
@@ -31,7 +27,6 @@ export class WsServer {
       });
     });
 
-    // Forward worker stdout to all clients
     this.procMgr.setOutputHandler((workerId, data) => {
       this.broadcast({
         type: "chat",
@@ -45,57 +40,29 @@ export class WsServer {
     this.wss = new WebSocketServer({ port: this.port });
 
     console.log(`  WebSocket server listening on port ${this.port}`);
-    console.log(`  Auth token: ${this.token}`);
 
     this.wss.on("connection", (ws) => {
-      // First message must be auth
-      let isFirstMessage = true;
+      this.clients.add(ws);
+      // Send workers list immediately on connect — no auth needed
+      this.send(ws, { type: "workers", workers: this.telemetry.getAll() });
 
       ws.on("message", (raw) => {
         let msg: DaemonMessage;
         try {
           msg = JSON.parse(raw.toString());
         } catch {
-          ws.send(
-            JSON.stringify({ type: "error", error: "Invalid JSON" } satisfies DaemonResponse)
-          );
+          this.send(ws, { type: "error", error: "Invalid JSON" });
           return;
         }
-
-        // Auth check on first message
-        if (isFirstMessage) {
-          isFirstMessage = false;
-          if (msg.token !== this.token) {
-            ws.close(4001, "Unauthorized");
-            return;
-          }
-          this.authenticated.add(ws);
-          this.send(ws, { type: "workers", workers: this.telemetry.getAll() });
-        } else if (!this.authenticated.has(ws)) {
-          ws.close(4001, "Unauthorized");
-          return;
-        }
-
-        // Verify token on every message
-        if (msg.token !== this.token) {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              error: "Invalid token",
-            } satisfies DaemonResponse)
-          );
-          return;
-        }
-
         this.handleMessage(ws, msg);
       });
 
       ws.on("close", () => {
-        this.authenticated.delete(ws);
+        this.clients.delete(ws);
       });
 
       ws.on("error", () => {
-        this.authenticated.delete(ws);
+        this.clients.delete(ws);
       });
     });
   }
@@ -108,7 +75,6 @@ export class WsServer {
           return;
         }
         const workerId = this.procMgr.spawn(msg.project, msg.task || null);
-        // Send back updated workers list
         this.send(ws, {
           type: "workers",
           workers: this.telemetry.getAll(),
@@ -154,7 +120,6 @@ export class WsServer {
       }
 
       case "orchestrator": {
-        // Placeholder for orchestrator messages
         this.send(ws, {
           type: "orchestrator",
           content: "Orchestrator not yet implemented",
@@ -163,7 +128,7 @@ export class WsServer {
       }
 
       default:
-        this.send(ws, { type: "error", error: `Unknown message type` });
+        this.send(ws, { type: "error", error: "Unknown message type" });
     }
   }
 
@@ -175,7 +140,7 @@ export class WsServer {
 
   private broadcast(response: DaemonResponse): void {
     const data = JSON.stringify(response);
-    for (const client of this.authenticated) {
+    for (const client of this.clients) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(data);
       }

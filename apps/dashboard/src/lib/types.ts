@@ -21,7 +21,6 @@ export interface DaemonMessage {
   project?: string;
   task?: string;
   content?: string;
-  token: string;
 }
 
 export interface DaemonResponse {

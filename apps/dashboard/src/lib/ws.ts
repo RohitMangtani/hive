@@ -5,7 +5,7 @@ import type { DaemonMessage, DaemonResponse, WorkerState } from "@/lib/types";
 
 const MAX_CHAT_MESSAGES = 500;
 
-export function useHive(daemonUrl: string, token: string) {
+export function useHive(daemonUrl: string) {
   const [connected, setConnected] = useState(false);
   const [workers, setWorkers] = useState<Map<string, WorkerState>>(new Map());
   const [chatMessages, setChatMessages] = useState<Map<string, string[]>>(
@@ -16,16 +16,16 @@ export function useHive(daemonUrl: string, token: string) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const send = useCallback(
-    (msg: Omit<DaemonMessage, "token">) => {
+    (msg: DaemonMessage) => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ ...msg, token }));
+        wsRef.current.send(JSON.stringify(msg));
       }
     },
-    [token]
+    []
   );
 
   useEffect(() => {
-    if (!daemonUrl || !token) return;
+    if (!daemonUrl) return;
 
     function connect() {
       const ws = new WebSocket(daemonUrl);
@@ -33,8 +33,6 @@ export function useHive(daemonUrl: string, token: string) {
 
       ws.onopen = () => {
         setConnected(true);
-        // Authenticate and request initial worker list
-        ws.send(JSON.stringify({ type: "list", token }));
       };
 
       ws.onmessage = (event) => {
@@ -77,7 +75,6 @@ export function useHive(daemonUrl: string, token: string) {
                 const next = new Map(prev);
                 const existing = next.get(wid) ?? [];
                 const updated = [...existing, content];
-                // Cap at MAX_CHAT_MESSAGES
                 if (updated.length > MAX_CHAT_MESSAGES) {
                   updated.splice(0, updated.length - MAX_CHAT_MESSAGES);
                 }
@@ -90,7 +87,6 @@ export function useHive(daemonUrl: string, token: string) {
 
           case "orchestrator":
           case "error":
-            // These are handled by the page/components directly if needed
             break;
         }
       };
@@ -98,8 +94,7 @@ export function useHive(daemonUrl: string, token: string) {
       ws.onclose = () => {
         setConnected(false);
         wsRef.current = null;
-        // Auto-reconnect after 5 seconds
-        reconnectTimerRef.current = setTimeout(connect, 5000);
+        reconnectTimerRef.current = setTimeout(connect, 3000);
       };
 
       ws.onerror = () => {
@@ -115,13 +110,13 @@ export function useHive(daemonUrl: string, token: string) {
         reconnectTimerRef.current = null;
       }
       if (wsRef.current) {
-        wsRef.current.onclose = null; // Prevent reconnect on intentional cleanup
+        wsRef.current.onclose = null;
         wsRef.current.close();
         wsRef.current = null;
       }
       setConnected(false);
     };
-  }, [daemonUrl, token]);
+  }, [daemonUrl]);
 
   return { connected, workers, chatMessages, send };
 }
