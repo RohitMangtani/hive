@@ -12,7 +12,6 @@ export interface WorkerState {
   task: string | null;
   managed: boolean; // true = spawned by Hive, false = discovered on machine
   tty?: string;     // terminal device (e.g. "ttys002")
-  color?: string;   // hex color for visual differentiation
 }
 
 export interface TelemetryEvent {

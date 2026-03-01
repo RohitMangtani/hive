@@ -1,4 +1,5 @@
 import express from "express";
+import { basename } from "path";
 import type { Server } from "http";
 import type { WorkerState, TelemetryEvent } from "./types.js";
 
@@ -13,6 +14,11 @@ export class TelemetryReceiver {
   private server: Server | null = null;
   private port: number;
 
+  // Hook support: session_id → worker_id
+  private sessionToWorker = new Map<string, string>();
+  // Track last hook event time per worker (to avoid CPU-based overrides)
+  private lastHookTime = new Map<string, number>();
+
   constructor(port: number) {
     this.port = port;
   }
@@ -25,6 +31,7 @@ export class TelemetryReceiver {
       res.json({ ok: true });
     });
 
+    // Original telemetry endpoint (for managed workers)
     app.post("/telemetry", (req, res) => {
       const event = req.body as TelemetryEvent;
 
@@ -37,9 +44,23 @@ export class TelemetryReceiver {
       res.json({ ok: true });
     });
 
+    // Claude Code hook endpoint — receives live tool events
+    app.post("/hook", (req, res) => {
+      this.handleHook(req.body);
+      res.json({ ok: true });
+    });
+
     this.server = app.listen(this.port, () => {
       console.log(`  Telemetry receiver listening on port ${this.port}`);
     });
+  }
+
+  registerSession(sessionId: string, workerId: string): void {
+    this.sessionToWorker.set(sessionId, workerId);
+  }
+
+  getLastHookTime(workerId: string): number | undefined {
+    return this.lastHookTime.get(workerId);
   }
 
   registerWorker(
@@ -78,6 +99,11 @@ export class TelemetryReceiver {
   removeWorker(id: string): void {
     this.workers.delete(id);
     this.recentTools.delete(id);
+    this.lastHookTime.delete(id);
+    // Clean up session mappings pointing to this worker
+    for (const [sid, wid] of this.sessionToWorker) {
+      if (wid === id) this.sessionToWorker.delete(sid);
+    }
   }
 
   get(id: string): WorkerState | undefined {
@@ -102,6 +128,95 @@ export class TelemetryReceiver {
       }
     }
   }
+
+  notifyExternal(worker: WorkerState): void {
+    this.notify(worker);
+  }
+
+  // --- Hook handling ---
+
+  private handleHook(body: Record<string, unknown>): void {
+    const sessionId = body.session_id as string | undefined;
+    const eventName = body.hook_event_name as string | undefined;
+    const toolName = body.tool_name as string | undefined;
+    const toolInput = body.tool_input as Record<string, unknown> | undefined;
+    const cwd = body.cwd as string | undefined;
+
+    if (!sessionId || !eventName) return;
+
+    // Find the worker this hook belongs to
+    let workerId = this.sessionToWorker.get(sessionId);
+
+    // Fallback: match by cwd
+    if (!workerId && cwd) {
+      for (const w of this.workers.values()) {
+        if (w.project === cwd || cwd.startsWith(w.project + "/")) {
+          workerId = w.id;
+          this.sessionToWorker.set(sessionId, workerId);
+          break;
+        }
+      }
+    }
+
+    if (!workerId) return;
+    const worker = this.workers.get(workerId);
+    if (!worker) return;
+
+    const now = Date.now();
+    this.lastHookTime.set(workerId, now);
+    worker.lastActionAt = now;
+
+    // Update project from cwd if available (most accurate source)
+    if (cwd) {
+      const name = cwd.split("/").pop();
+      if (name && name !== "rmgtni" && name !== "/") {
+        worker.project = cwd;
+        worker.projectName = name;
+      }
+    }
+
+    switch (eventName) {
+      case "PreToolUse": {
+        worker.status = "working";
+        const action = describeAction(toolName, toolInput);
+        worker.currentAction = action;
+        worker.lastAction = action;
+        if (toolName) {
+          this.trackTool(workerId, toolName);
+        }
+        break;
+      }
+
+      case "PostToolUse": {
+        worker.lastAction = `Done: ${describeAction(toolName, toolInput)}`;
+        worker.status = "working"; // still working until idle timeout
+        worker.currentAction = null;
+        if (this.isStuck(workerId)) {
+          worker.status = "stuck";
+        }
+        break;
+      }
+
+      case "Stop":
+      case "SessionEnd": {
+        worker.status = "idle";
+        worker.currentAction = null;
+        worker.lastAction = "Session ended";
+        break;
+      }
+
+      case "SessionStart": {
+        worker.status = "waiting";
+        worker.currentAction = null;
+        worker.lastAction = "Session started";
+        break;
+      }
+    }
+
+    this.notify(worker);
+  }
+
+  // --- Original telemetry event handling ---
 
   private handleEvent(event: TelemetryEvent): void {
     const worker = this.workers.get(event.worker_id);
@@ -135,7 +250,6 @@ export class TelemetryReceiver {
             worker.errorCount++;
           }
         }
-        // Check for stuck state
         if (this.isStuck(event.worker_id)) {
           worker.status = "stuck";
         }
@@ -158,7 +272,6 @@ export class TelemetryReceiver {
         break;
     }
 
-    // Check error threshold for stuck
     if (worker.errorCount > 2) {
       worker.status = "stuck";
     }
@@ -184,13 +297,54 @@ export class TelemetryReceiver {
     return recentSlice.every((t) => t === last);
   }
 
-  notifyExternal(worker: WorkerState): void {
-    this.notify(worker);
-  }
-
   private notify(worker: WorkerState): void {
     for (const listener of this.listeners) {
       listener(worker.id, worker);
     }
   }
+}
+
+/** Human-readable description of what a tool is doing */
+function describeAction(
+  toolName: string | undefined,
+  toolInput: Record<string, unknown> | undefined
+): string {
+  if (!toolName) return "Working";
+
+  const filePath = toolInput?.file_path as string | undefined;
+  const fileName = filePath ? basename(filePath) : undefined;
+
+  switch (toolName) {
+    case "Bash":
+      return (toolInput?.description as string) ||
+        truncate(toolInput?.command as string, 50) ||
+        "Running command";
+    case "Edit":
+      return fileName ? `Editing ${fileName}` : "Editing file";
+    case "Write":
+      return fileName ? `Writing ${fileName}` : "Writing file";
+    case "Read":
+      return fileName ? `Reading ${fileName}` : "Reading file";
+    case "Grep":
+      return toolInput?.pattern
+        ? `Searching "${truncate(toolInput.pattern as string, 25)}"`
+        : "Searching code";
+    case "Glob":
+      return toolInput?.pattern
+        ? `Finding ${truncate(toolInput.pattern as string, 30)}`
+        : "Finding files";
+    case "WebFetch":
+      return "Fetching web page";
+    case "WebSearch":
+      return `Searching web`;
+    case "Task":
+      return "Running subagent";
+    default:
+      return toolName.replace(/^mcp__\w+__/, "");
+  }
+}
+
+function truncate(s: string | undefined, max: number): string {
+  if (!s) return "";
+  return s.length > max ? s.slice(0, max) + "..." : s;
 }

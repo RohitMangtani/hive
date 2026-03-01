@@ -16,18 +16,31 @@ function normalizeUrl(url: string): string {
   return u.replace(/\/+$/, "");
 }
 
-function statusClass(w: WorkerState): "active" | "needs" | "queued" | "idle" {
-  if (w.status === "stuck") return "needs";
-  if (w.status === "working") return "active";
-  if (w.status === "waiting") return "active";
-  return "idle";
+type DotColor = "green" | "yellow" | "red";
+
+function dotColor(w: WorkerState): DotColor {
+  if (w.status === "working") return "green";
+  if (w.status === "stuck") return "yellow";
+  return "red"; // waiting, idle = offline
 }
+
+const DOT_CSS: Record<DotColor, string> = {
+  green: "var(--dot-active)",
+  yellow: "var(--dot-needs)",
+  red: "var(--dot-offline)",
+};
+
+const DOT_GLOW: Record<DotColor, string> = {
+  green: "rgba(34,197,94,0.15)",
+  yellow: "rgba(234,179,8,0.2)",
+  red: "rgba(220,38,38,0.15)",
+};
 
 function statusLabel(w: WorkerState): string {
   if (w.status === "stuck") return w.currentAction || "Needs direction";
   if (w.status === "working") return w.currentAction || "Working...";
-  if (w.status === "waiting") return w.lastAction || "Waiting";
-  return "Idle";
+  if (w.status === "waiting") return w.lastAction || "Paused";
+  return "Offline";
 }
 
 function timeActive(ts: number): string {
@@ -51,20 +64,21 @@ function agentPositions(count: number): { x: number; y: number }[] {
 // --- Agent Card ---
 
 function AgentCard({ worker, selected, onClick }: { worker: WorkerState; selected: boolean; onClick: () => void }) {
-  const sc = statusClass(worker);
-  const agentColor = worker.color || (sc === "needs" ? "var(--dot-needs)" : sc === "active" ? "var(--dot-active)" : "var(--dot-idle)");
+  const color = dotColor(worker);
+  const css = DOT_CSS[color];
+  const stuck = color === "yellow";
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`agent-card w-full text-left ${sc === "needs" ? "needs-direction" : ""} ${selected ? "selected" : ""}`}
-      style={{ borderLeftColor: agentColor, borderLeftWidth: "3px" }}
+      className={`agent-card w-full text-left ${stuck ? "needs-direction" : ""} ${selected ? "selected" : ""}`}
+      style={{ borderLeftColor: css, borderLeftWidth: "3px" }}
     >
       <div className="flex items-start gap-3">
         <span
-          className={`mt-1.5 w-3 h-3 rounded-full shrink-0 ${sc === "needs" ? "animate-pulse" : ""}`}
-          style={{ background: agentColor }}
+          className={`mt-1.5 w-3 h-3 rounded-full shrink-0 ${stuck ? "animate-pulse" : ""}`}
+          style={{ background: css }}
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -73,7 +87,7 @@ function AgentCard({ worker, selected, onClick }: { worker: WorkerState; selecte
               <span className="text-[10px] font-mono text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">{worker.tty}</span>
             )}
           </div>
-          <p className={`text-xs mt-0.5 truncate ${sc === "needs" ? "text-[var(--dot-needs)] font-medium" : "text-[var(--text-muted)]"}`}>
+          <p className={`text-xs mt-0.5 truncate ${stuck ? "text-[var(--dot-needs)] font-medium" : "text-[var(--text-muted)]"}`}>
             {statusLabel(worker)}
           </p>
           <p className="text-[10px] text-[var(--text-light)] mt-0.5 truncate">
@@ -115,24 +129,30 @@ function AgentMap({ workers, selectedId, onSelect }: { workers: WorkerState[]; s
       {workers.map((w, i) => {
         const pos = positions[i];
         if (!pos) return null;
-        const sc = statusClass(w);
+        const color = dotColor(w);
+        const css = DOT_CSS[color];
+        const glow = DOT_GLOW[color];
         const isSelected = w.id === selectedId;
-        const agentColor = w.color || (sc === "needs" ? "var(--dot-needs)" : sc === "active" ? "var(--dot-active)" : "var(--dot-idle)");
 
         return (
           <button key={w.id} type="button" onClick={() => onSelect(w.id)} className="absolute z-10 group" style={{ left: `${pos.x}%`, top: `${pos.y}%`, transform: "translate(-50%, -50%)" }}>
             <div
-              className={`w-4 h-4 rounded-full ${isSelected ? "ring-2 ring-neutral-900 ring-offset-2" : ""} ${sc === "needs" ? "animate-pulse" : ""}`}
-              style={{ background: agentColor, boxShadow: `0 0 0 4px ${agentColor}22`, position: "relative" }}
+              className={`w-4 h-4 rounded-full ${isSelected ? "ring-2 ring-neutral-900 ring-offset-2" : ""} ${color === "yellow" ? "animate-pulse" : ""}`}
+              style={{ background: css, boxShadow: `0 0 0 4px ${glow}` }}
             />
             <div className="absolute top-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
               <span className={`text-xs font-semibold ${isSelected ? "text-[var(--text)]" : "text-[var(--text-muted)]"}`}>{w.projectName}</span>
+              {w.tty && (
+                <div className="mt-0.5">
+                  <span className="text-[10px] font-mono text-[var(--text-light)]">{w.tty}</span>
+                </div>
+              )}
               <div className="mt-0.5">
                 <span className="text-[10px] text-[var(--text-light)]">
-                  {sc === "active" ? statusLabel(w) : sc === "needs" ? "" : "(idle)"}
+                  {color === "green" ? statusLabel(w) : color === "yellow" ? "" : "(offline)"}
                 </span>
               </div>
-              {sc === "needs" && <div className="mt-0.5"><span className="needs-badge">needs direction</span></div>}
+              {color === "yellow" && <div className="mt-0.5"><span className="needs-badge">needs direction</span></div>}
             </div>
           </button>
         );
@@ -151,13 +171,14 @@ function AgentMap({ workers, selectedId, onSelect }: { workers: WorkerState[]; s
 
 function ChatDrawer({ worker, messages, onSend, onClose }: { worker: WorkerState; messages: string[]; onSend: (msg: string) => void; onClose: () => void }) {
   const [input, setInput] = useState("");
+  const color = dotColor(worker);
 
   return (
     <div className="fixed inset-y-0 right-0 w-[420px] bg-[var(--bg-card)] border-l border-[var(--border)] shadow-xl z-50 flex flex-col">
       <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
         <div>
           <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: worker.color || "var(--dot-idle)" }} />
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: DOT_CSS[color] }} />
             <span className="font-semibold text-sm">{worker.projectName}</span>
             {worker.tty && <span className="text-[10px] font-mono text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">{worker.tty}</span>}
             {!worker.managed && <span className="text-[10px] text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">read-only</span>}
@@ -216,14 +237,16 @@ export default function Home() {
   }, []);
 
   const workersArray = Array.from(workers.values());
-  const activeCount = workersArray.filter((w) => w.status === "working" || w.status === "waiting").length;
+  const activeCount = workersArray.filter((w) => w.status === "working").length;
   const needsCount = workersArray.filter((w) => w.status === "stuck").length;
   const selectedWorker = selectedId ? workers.get(selectedId) : null;
 
   const summaryParts: string[] = [];
   if (activeCount > 0) summaryParts.push(`${activeCount} active`);
   if (needsCount > 0) summaryParts.push(`${needsCount} needs direction`);
-  if (summaryParts.length === 0 && workersArray.length > 0) summaryParts.push(`${workersArray.length} idle`);
+  const offlineCount = workersArray.length - activeCount - needsCount;
+  if (offlineCount > 0) summaryParts.push(`${offlineCount} offline`);
+  if (summaryParts.length === 0 && workersArray.length > 0) summaryParts.push(`${workersArray.length} offline`);
 
   return (
     <main className="h-screen flex flex-col bg-[var(--bg)]">

@@ -11,25 +11,13 @@ interface ProcessInfo {
   tty: string;
   project: string;
   projectName: string;
+  sessionIds: string[];
 }
-
-const AGENT_COLORS = [
-  "#6366f1", // indigo
-  "#f59e0b", // amber
-  "#10b981", // emerald
-  "#ef4444", // red
-  "#8b5cf6", // violet
-  "#06b6d4", // cyan
-  "#f97316", // orange
-  "#ec4899", // pink
-];
 
 export class ProcessDiscovery {
   private telemetry: TelemetryReceiver;
   private discoveredPids = new Set<number>();
-  private pidColors = new Map<number, string>();
   private daemonPid = process.pid;
-  private colorIndex = 0;
 
   constructor(telemetry: TelemetryReceiver) {
     this.telemetry = telemetry;
@@ -43,6 +31,11 @@ export class ProcessDiscovery {
       alivePids.add(proc.pid);
       const id = `discovered_${proc.pid}`;
 
+      // Register session→worker mappings for hook lookups
+      for (const sid of proc.sessionIds) {
+        this.telemetry.registerSession(sid, id);
+      }
+
       if (this.discoveredPids.has(proc.pid)) {
         // Existing process — update project context + CPU status
         const existing = this.telemetry.get(id);
@@ -55,26 +48,24 @@ export class ProcessDiscovery {
             existing.projectName = proc.projectName;
           }
 
-          if (proc.cpuPercent > 5) {
-            existing.status = "working";
-            existing.currentAction = `CPU ${proc.cpuPercent.toFixed(0)}%`;
-          } else if (existing.status === "working") {
-            existing.status = "waiting";
-            existing.currentAction = null;
+          // Only update status from CPU if no recent hook event (hooks are more accurate)
+          const hookAge = Date.now() - (this.telemetry.getLastHookTime(id) || 0);
+          if (hookAge > 15_000) {
+            if (proc.cpuPercent > 5) {
+              existing.status = "working";
+              existing.currentAction = `CPU ${proc.cpuPercent.toFixed(0)}%`;
+            } else if (existing.status === "working") {
+              existing.status = "waiting";
+              existing.currentAction = null;
+            }
           }
 
-          // Broadcast the update
           this.telemetry.notifyExternal(existing);
         }
         continue;
       }
 
       // New process
-      if (!this.pidColors.has(proc.pid)) {
-        this.pidColors.set(proc.pid, AGENT_COLORS[this.colorIndex % AGENT_COLORS.length]);
-        this.colorIndex++;
-      }
-
       const worker: WorkerState = {
         id,
         pid: proc.pid,
@@ -89,7 +80,6 @@ export class ProcessDiscovery {
         task: null,
         managed: false,
         tty: proc.tty,
-        color: this.pidColors.get(proc.pid),
       };
 
       this.telemetry.registerDiscovered(id, worker);
@@ -101,7 +91,6 @@ export class ProcessDiscovery {
       if (!alivePids.has(pid)) {
         this.telemetry.removeWorker(`discovered_${pid}`);
         this.discoveredPids.delete(pid);
-        this.pidColors.delete(pid);
       }
     }
   }
@@ -150,6 +139,7 @@ export class ProcessDiscovery {
     tty: string;
     project: string;
     projectName: string;
+    sessionIds: string[];
   } | null {
     try {
       const raw = execFileSync("lsof", ["-p", String(pid), "-Fn"], {
@@ -183,22 +173,17 @@ export class ProcessDiscovery {
         ? `${homeDir}/factory/projects/${projectName}`
         : cwd;
 
-      return { tty, project, projectName };
+      return { tty, project, projectName, sessionIds };
     } catch {
       return null;
     }
   }
 
-  /**
-   * Read the LAST 5KB of the most recently modified session JSONL.
-   * Only look at recent activity to get the current project, not historical.
-   */
   private inferProject(sessionIds: string[]): string | null {
     const homeDir = process.env.HOME || `/Users/${process.env.USER}`;
     const projectsDir = join(homeDir, ".claude", "projects");
 
     try {
-      // Find the most recently modified JSONL for these sessions
       let bestFile: string | null = null;
       let bestMtime = 0;
 
@@ -220,19 +205,14 @@ export class ProcessDiscovery {
 
       if (!bestFile) return null;
 
-      // Read only the last 5KB — recent activity only
       const content = this.readTail(bestFile, 5_000);
-
-      // Count project references from file paths
       const counts = new Map<string, number>();
 
-      // Match ~/factory/projects/X/ paths
       for (const match of content.matchAll(/\/factory\/projects\/([^/\\"]+)/g)) {
         const name = match[1];
         counts.set(name, (counts.get(name) || 0) + 1);
       }
 
-      // Also match project-like paths with src/app/lib inside
       for (const match of content.matchAll(/\/Users\/[^/]+\/([^/\\"]+)\/(?:src|app|lib|components)\//g)) {
         const name = match[1];
         if (name !== "factory" && name !== ".claude" && name !== ".local") {

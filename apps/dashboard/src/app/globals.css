@@ -11,8 +11,8 @@
     --text-muted: #737373;
     --text-light: #a3a3a3;
     --dot-active: #22c55e;
-    --dot-needs: #dc2626;
-    --dot-queued: #a3a3a3;
+    --dot-needs: #eab308;
+    --dot-offline: #dc2626;
     --dot-idle: #d4d4d4;
   }
 
@@ -39,8 +39,8 @@
   }
 
   .agent-card.needs-direction {
-    border-color: var(--border-active);
-    background: #fef2f2;
+    border-color: var(--dot-needs);
+    background: #fefce8;
   }
 
   .agent-card.selected {
@@ -64,8 +64,8 @@
 
   .map-dot.needs {
     background: var(--dot-needs);
-    box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15);
-    animation: pulse-red 2s ease-in-out infinite;
+    box-shadow: 0 0 0 3px rgba(234, 179, 8, 0.2);
+    animation: pulse-yellow 2s ease-in-out infinite;
   }
 
   .map-dot.queued {
@@ -77,18 +77,18 @@
   }
 
   .needs-badge {
-    background: #fef2f2;
-    color: var(--dot-needs);
+    background: #fefce8;
+    color: #a16207;
     font-size: 11px;
     font-weight: 500;
     padding: 2px 8px;
     border-radius: 6px;
-    border: 1px solid #fecaca;
+    border: 1px solid #fde68a;
     white-space: nowrap;
   }
 }
 
-@keyframes pulse-red {
-  0%, 100% { box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15); }
-  50% { box-shadow: 0 0 0 6px rgba(220, 38, 38, 0.08); }
+@keyframes pulse-yellow {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(234, 179, 8, 0.2); }
+  50% { box-shadow: 0 0 0 6px rgba(234, 179, 8, 0.1); }
 }

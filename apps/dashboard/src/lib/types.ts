@@ -12,7 +12,6 @@ export interface WorkerState {
   task: string | null;
   managed: boolean;
   tty?: string;
-  color?: string;
 }
 
 export interface DaemonMessage {
