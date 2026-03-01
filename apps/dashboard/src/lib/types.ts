@@ -10,6 +10,7 @@ export interface WorkerState {
   errorCount: number;
   startedAt: number;
   task: string | null;
+  managed: boolean;
 }
 
 export interface DaemonMessage {

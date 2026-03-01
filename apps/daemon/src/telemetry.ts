@@ -62,11 +62,17 @@ export class TelemetryReceiver {
       errorCount: 0,
       startedAt: now,
       task,
+      managed: true,
     };
     this.workers.set(id, worker);
     this.recentTools.set(id, []);
     this.notify(worker);
     return worker;
+  }
+
+  registerDiscovered(id: string, worker: WorkerState): void {
+    this.workers.set(id, worker);
+    this.notify(worker);
   }
 
   removeWorker(id: string): void {
