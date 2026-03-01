@@ -98,29 +98,36 @@ function AgentCard({
   onClick: () => void;
 }) {
   const sc = statusClass(worker);
-  const dotColor =
-    sc === "active" ? "bg-[var(--dot-active)]" :
-    sc === "needs" ? "bg-[var(--dot-needs)]" :
-    sc === "queued" ? "bg-[var(--dot-queued)]" :
-    "bg-[var(--dot-idle)]";
+  const agentColor = worker.color || (
+    sc === "needs" ? "var(--dot-needs)" :
+    sc === "active" ? "var(--dot-active)" :
+    "var(--dot-idle)"
+  );
 
   return (
     <button
       type="button"
       onClick={onClick}
       className={`agent-card w-full text-left ${sc === "needs" ? "needs-direction" : ""} ${selected ? "selected" : ""}`}
+      style={{ borderLeftColor: agentColor, borderLeftWidth: "3px" }}
     >
       <div className="flex items-start gap-3">
-        <span className={`mt-1.5 w-3 h-3 rounded-full shrink-0 ${dotColor} ${sc === "needs" ? "animate-pulse" : ""}`} />
+        <span
+          className={`mt-1.5 w-3 h-3 rounded-full shrink-0 ${sc === "needs" ? "animate-pulse" : ""}`}
+          style={{ background: agentColor }}
+        />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-sm truncate">{worker.projectName}</span>
-            {!worker.managed && (
-              <span className="text-[10px] text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">discovered</span>
+            {worker.tty && (
+              <span className="text-[10px] font-mono text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">{worker.tty}</span>
             )}
           </div>
           <p className={`text-xs mt-0.5 truncate ${sc === "needs" ? "text-[var(--dot-needs)] font-medium" : "text-[var(--text-muted)]"}`}>
             {statusLabel(worker)}
+          </p>
+          <p className="text-[10px] text-[var(--text-light)] mt-0.5 truncate">
+            PID {worker.pid} · {timeActive(worker.startedAt)}
           </p>
         </div>
       </div>
@@ -184,6 +191,11 @@ function AgentMap({
         if (!pos) return null;
         const sc = statusClass(w);
         const isSelected = w.id === selectedId;
+        const agentColor = w.color || (
+          sc === "needs" ? "var(--dot-needs)" :
+          sc === "active" ? "var(--dot-active)" :
+          "var(--dot-idle)"
+        );
 
         return (
           <button
@@ -194,22 +206,27 @@ function AgentMap({
             style={{ left: `${pos.x}%`, top: `${pos.y}%`, transform: "translate(-50%, -50%)" }}
           >
             {/* Dot */}
-            <div className={`map-dot ${sc} ${isSelected ? "ring-2 ring-neutral-900 ring-offset-2" : ""}`}
-              style={{ position: "relative", transform: "none" }}
+            <div
+              className={`w-4 h-4 rounded-full ${isSelected ? "ring-2 ring-neutral-900 ring-offset-2" : ""} ${sc === "needs" ? "animate-pulse" : ""}`}
+              style={{
+                background: agentColor,
+                boxShadow: `0 0 0 4px ${agentColor}22`,
+                position: "relative",
+              }}
             />
             {/* Label */}
-            <div className="absolute top-5 left-1/2 -translate-x-1/2 whitespace-nowrap">
-              <span className={`text-xs font-medium ${isSelected ? "text-[var(--text)]" : "text-[var(--text-muted)]"}`}>
+            <div className="absolute top-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
+              <span className={`text-xs font-semibold ${isSelected ? "text-[var(--text)]" : "text-[var(--text-muted)]"}`}>
                 {w.projectName}
               </span>
+              <div className="mt-0.5">
+                <span className="text-[10px] text-[var(--text-light)]">
+                  {sc === "active" ? statusLabel(w) : sc === "needs" ? "" : "(idle)"}
+                </span>
+              </div>
               {sc === "needs" && (
-                <div className="mt-1">
-                  <span className="needs-badge">needs direction</span>
-                </div>
-              )}
-              {sc === "idle" && (
                 <div className="mt-0.5">
-                  <span className="text-[10px] text-[var(--text-light)]">(idle)</span>
+                  <span className="needs-badge">needs direction</span>
                 </div>
               )}
             </div>
@@ -248,12 +265,9 @@ function ChatDrawer({
       <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
         <div>
           <div className="flex items-center gap-2">
-            <span className={`w-2.5 h-2.5 rounded-full ${
-              sc === "active" ? "bg-[var(--dot-active)]" :
-              sc === "needs" ? "bg-[var(--dot-needs)]" :
-              "bg-[var(--dot-idle)]"
-            }`} />
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: worker.color || "var(--dot-idle)" }} />
             <span className="font-semibold text-sm">{worker.projectName}</span>
+            {worker.tty && <span className="text-[10px] font-mono text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">{worker.tty}</span>}
             {!worker.managed && <span className="text-[10px] text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">read-only</span>}
           </div>
           <p className="text-xs text-[var(--text-muted)] mt-0.5">PID {worker.pid} · {timeActive(worker.startedAt)} active</p>
