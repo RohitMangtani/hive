@@ -307,10 +307,24 @@ export default function Home() {
   const { connected, workers, chatMessages, send } = useHive(daemonUrl ?? "", token ?? "");
 
   const handleConnect = useCallback((url: string, t: string) => {
-    localStorage.setItem("hive_daemon_url", url);
+    // Normalize URL: https:// → wss://, http:// → ws://
+    let normalized = url;
+    if (normalized.startsWith("https://")) normalized = "wss://" + normalized.slice(8);
+    else if (normalized.startsWith("http://")) normalized = "ws://" + normalized.slice(7);
+    else if (!normalized.startsWith("ws://") && !normalized.startsWith("wss://")) normalized = "wss://" + normalized;
+    // Strip trailing slash
+    normalized = normalized.replace(/\/+$/, "");
+    localStorage.setItem("hive_daemon_url", normalized);
     localStorage.setItem("hive_token", t);
-    setDaemonUrl(url);
+    setDaemonUrl(normalized);
     setToken(t);
+  }, []);
+
+  const handleDisconnect = useCallback(() => {
+    localStorage.removeItem("hive_daemon_url");
+    localStorage.removeItem("hive_token");
+    setDaemonUrl(null);
+    setToken(null);
   }, []);
 
   if (!loaded) return <main className="min-h-screen bg-[var(--bg)]" />;
@@ -334,11 +348,18 @@ export default function Home() {
       </div>
 
       {/* Connection indicator */}
-      {!connected && (
-        <div className="text-center pb-2">
+      <div className="text-center pb-2 flex items-center justify-center gap-3">
+        {!connected && (
           <span className="text-xs text-[var(--dot-needs)] font-medium">Disconnected — reconnecting...</span>
-        </div>
-      )}
+        )}
+        <button
+          type="button"
+          onClick={handleDisconnect}
+          className="text-[10px] text-[var(--text-light)] hover:text-[var(--text-muted)] underline"
+        >
+          Change connection
+        </button>
+      </div>
 
       {/* Main layout */}
       <div className="flex-1 flex gap-5 px-6 pb-6 min-h-0">
