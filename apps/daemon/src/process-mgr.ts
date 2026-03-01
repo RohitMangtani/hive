@@ -1,5 +1,5 @@
 import { spawn as cpSpawn, type ChildProcess } from "child_process";
-import { randomUUID } from "crypto";
+import { randomBytes } from "crypto";
 import fs from "fs";
 import path from "path";
 import type { TelemetryReceiver } from "./telemetry.js";
@@ -26,7 +26,7 @@ export class ProcessManager {
   }
 
   spawn(project: string, task: string | null): string {
-    const id = randomUUID().slice(0, 8);
+    const id = `w_${randomBytes(6).toString("hex")}`;
     const hookPath = path.resolve(
       new URL(".", import.meta.url).pathname,
       "hooks",
@@ -92,12 +92,6 @@ export class ProcessManager {
       while (worker.outputBuffer.length > MAX_BUFFER_LINES) {
         worker.outputBuffer.shift();
       }
-
-      // Increment error count in telemetry
-      const state = this.telemetry.get(id);
-      if (state) {
-        state.errorCount++;
-      }
     });
 
     // Handle process exit
@@ -159,7 +153,7 @@ export class ProcessManager {
     const now = Date.now();
     for (const [id] of this.workers) {
       const state = this.telemetry.get(id);
-      if (state && now - state.lastActionAt > IDLE_KILL_THRESHOLD) {
+      if (state && state.status === "idle" && now - state.lastActionAt > IDLE_KILL_THRESHOLD) {
         console.log(`Worker ${id} idle for 15+ minutes, killing.`);
         this.kill(id);
       }
@@ -193,23 +187,30 @@ export class ProcessManager {
       }
     }
 
-    // Define hook commands
+    // Define hook commands using Claude Code nested object format
     const hookEvents = [
       "PreToolUse",
       "PostToolUse",
       "Stop",
-      "SubagentStart",
-      "SubagentStop",
+      "SessionStart",
     ];
 
     const hooks: Record<string, unknown> = (settings.hooks as Record<string, unknown>) || {};
 
     for (const event of hookEvents) {
-      const hookCmd = `HIVE_WORKER_ID=${workerId} HIVE_HOOK_EVENT=${event} ${hookPath}`;
-      const existing = (hooks[event] as string[] | undefined) || [];
+      const hookCmd = `HIVE_WORKER_ID=${workerId} HIVE_HOOK_EVENT=${event} bash ${hookPath}`;
+      const hookEntry = {
+        hooks: [{ type: "command", command: hookCmd }],
+      };
+
+      const existing = (hooks[event] as Array<Record<string, unknown>> | undefined) || [];
       // Only add if not already present
-      if (!existing.includes(hookCmd)) {
-        existing.push(hookCmd);
+      const alreadyPresent = existing.some((entry) => {
+        const entryHooks = entry.hooks as Array<Record<string, string>> | undefined;
+        return entryHooks?.some((h) => h.command?.includes("HIVE_WORKER_ID"));
+      });
+      if (!alreadyPresent) {
+        existing.push(hookEntry);
       }
       hooks[event] = existing;
     }
@@ -225,14 +226,16 @@ export class ProcessManager {
 
     try {
       const settings = JSON.parse(fs.readFileSync(settingsFile, "utf-8"));
-      const hooks = settings.hooks as Record<string, string[]> | undefined;
+      const hooks = settings.hooks as Record<string, Array<Record<string, unknown>>> | undefined;
       if (!hooks) return;
 
-      // Remove any hook commands that contain HIVE_WORKER_ID
+      // Remove any hook entries that contain HIVE_WORKER_ID
       for (const event of Object.keys(hooks)) {
-        hooks[event] = (hooks[event] || []).filter(
-          (cmd: string) => !cmd.includes("HIVE_WORKER_ID")
-        );
+        hooks[event] = (hooks[event] || []).filter((entry) => {
+          const entryHooks = entry.hooks as Array<Record<string, string>> | undefined;
+          if (!entryHooks) return true;
+          return !entryHooks.some((h) => h.command?.includes("HIVE_WORKER_ID"));
+        });
         if (hooks[event].length === 0) {
           delete hooks[event];
         }

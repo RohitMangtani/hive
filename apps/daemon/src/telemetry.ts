@@ -3,14 +3,13 @@ import type { Server } from "http";
 import type { WorkerState, TelemetryEvent } from "./types.js";
 
 const IDLE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
-const WORKING_THRESHOLD = 30 * 1000; // 30 seconds
 const STUCK_REPEAT_COUNT = 3;
 const RECENT_TOOLS_LIMIT = 5;
 
 export class TelemetryReceiver {
   private workers = new Map<string, WorkerState>();
   private recentTools = new Map<string, string[]>();
-  private listeners: Array<(worker: WorkerState) => void> = [];
+  private listeners: Array<(workerId: string, state: WorkerState) => void> = [];
   private server: Server | null = null;
   private port: number;
 
@@ -56,7 +55,7 @@ export class TelemetryReceiver {
       pid,
       project,
       projectName,
-      status: "idle",
+      status: "waiting",
       currentAction: null,
       lastAction: "spawned",
       lastActionAt: now,
@@ -83,14 +82,14 @@ export class TelemetryReceiver {
     return Array.from(this.workers.values());
   }
 
-  onUpdate(callback: (worker: WorkerState) => void): void {
+  onUpdate(callback: (workerId: string, state: WorkerState) => void): void {
     this.listeners.push(callback);
   }
 
   tick(): void {
     const now = Date.now();
     for (const worker of this.workers.values()) {
-      if (now - worker.lastActionAt > IDLE_THRESHOLD && worker.status !== "idle") {
+      if (now - worker.lastActionAt > IDLE_THRESHOLD && worker.status === "waiting") {
         worker.status = "idle";
         worker.currentAction = null;
         this.notify(worker);
@@ -107,7 +106,8 @@ export class TelemetryReceiver {
 
     switch (event.event) {
       case "SessionStart":
-        worker.status = "working";
+        worker.status = "waiting";
+        worker.errorCount = 0;
         worker.lastAction = "session started";
         worker.currentAction = "initializing";
         break;
@@ -125,6 +125,9 @@ export class TelemetryReceiver {
         worker.lastAction = `completed ${event.tool_name || "tool"}`;
         if (event.summary) {
           worker.lastAction = event.summary;
+          if (event.summary.toLowerCase().includes("error")) {
+            worker.errorCount++;
+          }
         }
         // Check for stuck state
         if (this.isStuck(event.worker_id)) {
@@ -154,15 +157,6 @@ export class TelemetryReceiver {
       worker.status = "stuck";
     }
 
-    // Check working threshold — if last activity was recent, still working
-    if (
-      worker.status !== "stuck" &&
-      worker.status !== "waiting" &&
-      now - worker.lastActionAt < WORKING_THRESHOLD
-    ) {
-      worker.status = "working";
-    }
-
     this.notify(worker);
   }
 
@@ -186,7 +180,7 @@ export class TelemetryReceiver {
 
   private notify(worker: WorkerState): void {
     for (const listener of this.listeners) {
-      listener(worker);
+      listener(worker.id, worker);
     }
   }
 }

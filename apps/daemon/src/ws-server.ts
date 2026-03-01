@@ -23,11 +23,11 @@ export class WsServer {
     this.token = randomUUID();
 
     // Forward telemetry updates to all connected clients
-    this.telemetry.onUpdate((worker) => {
+    this.telemetry.onUpdate((workerId, worker) => {
       this.broadcast({
         type: "worker_update",
         worker,
-        workerId: worker.id,
+        workerId,
       });
     });
 
@@ -70,6 +70,7 @@ export class WsServer {
             return;
           }
           this.authenticated.add(ws);
+          this.send(ws, { type: "workers", workers: this.telemetry.getAll() });
         } else if (!this.authenticated.has(ws)) {
           ws.close(4001, "Unauthorized");
           return;
