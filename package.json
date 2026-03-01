@@ -1,0 +1,15 @@
+{
+  "name": "hive",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:daemon": "npm -w apps/daemon run dev",
+    "dev:dashboard": "npm -w apps/dashboard run dev",
+    "build": "turbo build"
+  },
+  "devDependencies": {
+    "turbo": "^2.8.12"
+  }
+}
