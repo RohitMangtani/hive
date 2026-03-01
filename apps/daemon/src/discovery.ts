@@ -61,6 +61,16 @@ export class ProcessDiscovery {
               existing.lastAction = "Paused";
             }
             // If already waiting/idle, don't touch lastActionAt — let idle timeout handle it
+
+            // Fallback: check JSONL for permission prompts (works without hooks)
+            if (proc.cpuPercent < 5 && existing.status !== "stuck" && proc.sessionIds.length > 0) {
+              const prompt = this.checkForPendingPrompt(proc.sessionIds);
+              if (prompt) {
+                existing.status = "stuck";
+                existing.currentAction = prompt;
+                existing.lastAction = prompt;
+              }
+            }
           }
 
           this.telemetry.notifyExternal(existing);
@@ -227,6 +237,53 @@ export class ProcessDiscovery {
 
       const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
       return sorted[0][0];
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Check if the most recent JSONL entry indicates Claude is waiting for user input.
+   * Looks for AskUserQuestion tool uses, permission prompts, etc.
+   */
+  private checkForPendingPrompt(sessionIds: string[]): string | null {
+    const homeDir = process.env.HOME || `/Users/${process.env.USER}`;
+    const projectsDir = join(homeDir, ".claude", "projects");
+
+    try {
+      let bestFile: string | null = null;
+      let bestMtime = 0;
+
+      for (const projectDir of readdirSync(projectsDir)) {
+        const fullDir = join(projectsDir, projectDir);
+        for (const sessionId of sessionIds) {
+          const jsonlPath = join(fullDir, `${sessionId}.jsonl`);
+          try {
+            const stat = statSync(jsonlPath);
+            if (stat.mtimeMs > bestMtime) {
+              bestMtime = stat.mtimeMs;
+              bestFile = jsonlPath;
+            }
+          } catch {
+            // File doesn't exist
+          }
+        }
+      }
+
+      if (!bestFile) return null;
+
+      // Only check if the file was modified recently (last 60 seconds)
+      if (Date.now() - bestMtime > 60_000) return null;
+
+      const tail = this.readTail(bestFile, 2_000);
+
+      // Check for permission prompts / user questions in the tail
+      if (tail.includes("AskUserQuestion")) return "Waiting for your answer";
+      if (tail.includes("permission_prompt")) return "Waiting for permission";
+      if (tail.includes("EnterPlanMode")) return "Waiting for plan approval";
+      if (tail.includes("ExitPlanMode")) return "Waiting for plan approval";
+
+      return null;
     } catch {
       return null;
     }

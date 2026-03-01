@@ -197,6 +197,21 @@ export class TelemetryReceiver {
         break;
       }
 
+      case "Notification": {
+        // Claude Code is waiting for user input (permission prompt, question, etc.)
+        const notifType = body.notification_type as string | undefined;
+        worker.status = "stuck";
+        if (notifType === "permission_prompt") {
+          worker.currentAction = "Waiting for permission";
+        } else if (notifType === "idle_prompt") {
+          worker.currentAction = "Waiting for input";
+        } else {
+          worker.currentAction = "Needs your attention";
+        }
+        worker.lastAction = worker.currentAction;
+        break;
+      }
+
       case "Stop":
       case "SessionEnd": {
         worker.status = "idle";
