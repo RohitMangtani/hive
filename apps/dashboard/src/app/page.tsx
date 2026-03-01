@@ -640,6 +640,7 @@ export default function Home() {
       {/* Floating chat popover — admin only */}
       {!isViewer && selectedEntry && (
         <ChatPopover
+          key={selectedEntry.worker.id}
           worker={selectedEntry.worker}
           num={selectedEntry.num}
           entries={chatEntries.get(selectedEntry.worker.id) ?? []}
