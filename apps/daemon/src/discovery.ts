@@ -40,8 +40,6 @@ export class ProcessDiscovery {
         // Existing process — update project context + CPU status
         const existing = this.telemetry.get(id);
         if (existing) {
-          existing.lastActionAt = Date.now();
-
           // Re-identify project on every scan
           if (proc.projectName !== "unknown") {
             existing.project = proc.project;
@@ -52,12 +50,17 @@ export class ProcessDiscovery {
           const hookAge = Date.now() - (this.telemetry.getLastHookTime(id) || 0);
           if (hookAge > 15_000) {
             if (proc.cpuPercent > 5) {
+              // Actually working — update timestamp and status
               existing.status = "working";
               existing.currentAction = `CPU ${proc.cpuPercent.toFixed(0)}%`;
+              existing.lastActionAt = Date.now();
             } else if (existing.status === "working") {
+              // Just stopped working — transition to waiting
               existing.status = "waiting";
               existing.currentAction = null;
+              existing.lastAction = "Paused";
             }
+            // If already waiting/idle, don't touch lastActionAt — let idle timeout handle it
           }
 
           this.telemetry.notifyExternal(existing);

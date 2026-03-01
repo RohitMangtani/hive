@@ -3,7 +3,7 @@ import { basename } from "path";
 import type { Server } from "http";
 import type { WorkerState, TelemetryEvent } from "./types.js";
 
-const IDLE_THRESHOLD = 5 * 60 * 1000; // 5 minutes
+const IDLE_THRESHOLD = 30_000; // 30 seconds without activity → idle
 const STUCK_REPEAT_COUNT = 3;
 const RECENT_TOOLS_LIMIT = 5;
 
