@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useHive } from "@/lib/ws";
 import type { WorkerState } from "@/lib/types";
 
@@ -21,7 +21,7 @@ type DotColor = "green" | "yellow" | "red";
 function dotColor(w: WorkerState): DotColor {
   if (w.status === "working") return "green";
   if (w.status === "stuck") return "yellow";
-  return "red"; // waiting, idle = offline
+  return "red";
 }
 
 const DOT_CSS: Record<DotColor, string> = {
@@ -30,16 +30,17 @@ const DOT_CSS: Record<DotColor, string> = {
   red: "var(--dot-offline)",
 };
 
-const DOT_GLOW: Record<DotColor, string> = {
-  green: "rgba(34,197,94,0.15)",
-  yellow: "rgba(234,179,8,0.2)",
-  red: "rgba(220,38,38,0.15)",
-};
-
 function statusLabel(w: WorkerState): string {
   if (w.status === "stuck") return w.currentAction || "Needs direction";
   if (w.status === "working") return w.currentAction || "Working...";
   if (w.status === "waiting") return w.lastAction || "Paused";
+  return "Offline";
+}
+
+function statusWord(w: WorkerState): string {
+  if (w.status === "working") return "Active";
+  if (w.status === "stuck") return "Needs direction";
+  if (w.status === "waiting") return "Paused";
   return "Offline";
 }
 
@@ -52,16 +53,65 @@ function timeActive(ts: number): string {
   return `${h}h ${m % 60}m`;
 }
 
-function agentPositions(count: number): { x: number; y: number }[] {
-  const positions = [
-    { x: 25, y: 18 }, { x: 55, y: 30 }, { x: 70, y: 60 }, { x: 30, y: 70 },
-    { x: 80, y: 20 }, { x: 15, y: 45 }, { x: 50, y: 80 }, { x: 85, y: 45 },
-    { x: 40, y: 50 }, { x: 65, y: 15 },
-  ];
-  return positions.slice(0, count);
+// --- Status Tile (the useful replacement for the map) ---
+
+function StatusTile({ worker, selected, onClick }: { worker: WorkerState; selected: boolean; onClick: () => void }) {
+  const color = dotColor(worker);
+  const css = DOT_CSS[color];
+  const stuck = color === "yellow";
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`status-tile text-left ${stuck ? "needs-direction" : ""} ${selected ? "selected" : ""}`}
+      style={{ borderLeftColor: css, borderLeftWidth: "4px" }}
+    >
+      {/* Top row: dot + project name + uptime */}
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span
+            className={`w-3 h-3 rounded-full shrink-0 ${stuck ? "animate-pulse" : ""}`}
+            style={{ background: css }}
+          />
+          <span className="font-semibold text-sm truncate">{worker.projectName}</span>
+        </div>
+        <span className="text-[11px] text-[var(--text-light)] shrink-0 tabular-nums">{timeActive(worker.startedAt)}</span>
+      </div>
+
+      {/* Meta row: TTY + PID + status word */}
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        {worker.tty && (
+          <span className="text-[10px] font-mono text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">{worker.tty}</span>
+        )}
+        <span className="text-[10px] text-[var(--text-light)]">PID {worker.pid}</span>
+        <span
+          className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+          style={{
+            background: color === "green" ? "#dcfce7" : color === "yellow" ? "#fefce8" : "#fef2f2",
+            color: color === "green" ? "#166534" : color === "yellow" ? "#a16207" : "#991b1b",
+          }}
+        >
+          {statusWord(worker)}
+        </span>
+      </div>
+
+      {/* Action: what it's doing right now */}
+      <p className={`text-xs truncate ${stuck ? "text-[var(--dot-needs)] font-medium" : "text-[var(--text-muted)]"}`}>
+        {statusLabel(worker)}
+      </p>
+
+      {/* Last action (if different from current) */}
+      {worker.lastAction && worker.lastAction !== worker.currentAction && (
+        <p className="text-[10px] text-[var(--text-light)] truncate mt-1">
+          Last: {worker.lastAction}
+        </p>
+      )}
+    </button>
+  );
 }
 
-// --- Agent Card ---
+// --- Compact Card (sidebar on desktop) ---
 
 function AgentCard({ worker, selected, onClick }: { worker: WorkerState; selected: boolean; onClick: () => void }) {
   const color = dotColor(worker);
@@ -75,117 +125,39 @@ function AgentCard({ worker, selected, onClick }: { worker: WorkerState; selecte
       className={`agent-card w-full text-left ${stuck ? "needs-direction" : ""} ${selected ? "selected" : ""}`}
       style={{ borderLeftColor: css, borderLeftWidth: "3px" }}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-center gap-2">
         <span
-          className={`mt-1.5 w-3 h-3 rounded-full shrink-0 ${stuck ? "animate-pulse" : ""}`}
+          className={`w-2.5 h-2.5 rounded-full shrink-0 ${stuck ? "animate-pulse" : ""}`}
           style={{ background: css }}
         />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-sm truncate">{worker.projectName}</span>
-            {worker.tty && (
-              <span className="text-[10px] font-mono text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">{worker.tty}</span>
-            )}
-          </div>
-          <p className={`text-xs mt-0.5 truncate ${stuck ? "text-[var(--dot-needs)] font-medium" : "text-[var(--text-muted)]"}`}>
-            {statusLabel(worker)}
-          </p>
-          <p className="text-[10px] text-[var(--text-light)] mt-0.5 truncate">
-            PID {worker.pid} · {timeActive(worker.startedAt)}
-          </p>
-        </div>
+        <span className="font-semibold text-sm truncate flex-1">{worker.projectName}</span>
+        {worker.tty && (
+          <span className="text-[10px] font-mono text-[var(--text-light)]">{worker.tty}</span>
+        )}
       </div>
     </button>
   );
 }
 
-// --- Agent Map ---
-
-function AgentMap({ workers, selectedId, onSelect }: { workers: WorkerState[]; selectedId: string | null; onSelect: (id: string) => void }) {
-  const positions = useMemo(() => agentPositions(workers.length), [workers.length]);
-
-  return (
-    <div className="relative w-full h-full bg-[var(--bg-panel)] rounded-2xl border border-[var(--border)] overflow-hidden">
-      <div className="absolute inset-0" style={{ backgroundImage: "radial-gradient(circle, #d4d4d4 1px, transparent 1px)", backgroundSize: "24px 24px" }} />
-
-      <div className="absolute top-4 right-5 flex items-center gap-2 z-20">
-        <span className="text-xs text-[var(--text-muted)] font-medium">Live view</span>
-        <span className="w-2.5 h-2.5 rounded-full bg-[var(--dot-active)]" />
-      </div>
-
-      <div className="absolute top-4 left-5 z-20">
-        <span className="text-sm font-semibold text-[var(--text)]">Agent Map</span>
-      </div>
-
-      <svg className="absolute inset-0 w-full h-full z-0" xmlns="http://www.w3.org/2000/svg">
-        {workers.length > 1 && positions.map((pos, i) => {
-          const next = positions[(i + 1) % positions.length];
-          return (
-            <line key={`line-${i}`} x1={`${pos.x}%`} y1={`${pos.y}%`} x2={`${next.x}%`} y2={`${next.y}%`} stroke="#d4d4d4" strokeWidth="1" strokeDasharray="4 4" />
-          );
-        })}
-      </svg>
-
-      {workers.map((w, i) => {
-        const pos = positions[i];
-        if (!pos) return null;
-        const color = dotColor(w);
-        const css = DOT_CSS[color];
-        const glow = DOT_GLOW[color];
-        const isSelected = w.id === selectedId;
-
-        return (
-          <button key={w.id} type="button" onClick={() => onSelect(w.id)} className="absolute z-10 group" style={{ left: `${pos.x}%`, top: `${pos.y}%`, transform: "translate(-50%, -50%)" }}>
-            <div
-              className={`w-4 h-4 rounded-full ${isSelected ? "ring-2 ring-neutral-900 ring-offset-2" : ""} ${color === "yellow" ? "animate-pulse" : ""}`}
-              style={{ background: css, boxShadow: `0 0 0 4px ${glow}` }}
-            />
-            <div className="absolute top-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-center">
-              <span className={`text-xs font-semibold ${isSelected ? "text-[var(--text)]" : "text-[var(--text-muted)]"}`}>{w.projectName}</span>
-              {w.tty && (
-                <div className="mt-0.5">
-                  <span className="text-[10px] font-mono text-[var(--text-light)]">{w.tty}</span>
-                </div>
-              )}
-              <div className="mt-0.5">
-                <span className="text-[10px] text-[var(--text-light)]">
-                  {color === "green" ? statusLabel(w) : color === "yellow" ? "" : "(offline)"}
-                </span>
-              </div>
-              {color === "yellow" && <div className="mt-0.5"><span className="needs-badge">needs direction</span></div>}
-            </div>
-          </button>
-        );
-      })}
-
-      {workers.length === 0 && (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <p className="text-sm text-[var(--text-muted)]">No agents detected</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// --- Chat Drawer ---
+// --- Chat Drawer (responsive) ---
 
 function ChatDrawer({ worker, messages, onSend, onClose }: { worker: WorkerState; messages: string[]; onSend: (msg: string) => void; onClose: () => void }) {
   const [input, setInput] = useState("");
   const color = dotColor(worker);
 
   return (
-    <div className="fixed inset-y-0 right-0 w-[420px] bg-[var(--bg-card)] border-l border-[var(--border)] shadow-xl z-50 flex flex-col">
-      <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]">
-        <div>
+    <div className="chat-drawer">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: DOT_CSS[color] }} />
-            <span className="font-semibold text-sm">{worker.projectName}</span>
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: DOT_CSS[color] }} />
+            <span className="font-semibold text-sm truncate">{worker.projectName}</span>
             {worker.tty && <span className="text-[10px] font-mono text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">{worker.tty}</span>}
             {!worker.managed && <span className="text-[10px] text-[var(--text-light)] bg-[var(--bg-panel)] px-1.5 py-0.5 rounded">read-only</span>}
           </div>
-          <p className="text-xs text-[var(--text-muted)] mt-0.5">PID {worker.pid} · {timeActive(worker.startedAt)} active</p>
+          <p className="text-[11px] text-[var(--text-muted)] mt-0.5">PID {worker.pid} · {timeActive(worker.startedAt)} active</p>
         </div>
-        <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text)] text-lg leading-none">&times;</button>
+        <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text)] text-xl leading-none p-1">&times;</button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-1 font-mono text-xs text-[var(--text-muted)]">
@@ -239,24 +211,20 @@ export default function Home() {
   const workersArray = Array.from(workers.values());
   const activeCount = workersArray.filter((w) => w.status === "working").length;
   const needsCount = workersArray.filter((w) => w.status === "stuck").length;
+  const offlineCount = workersArray.length - activeCount - needsCount;
   const selectedWorker = selectedId ? workers.get(selectedId) : null;
 
-  const summaryParts: string[] = [];
-  if (activeCount > 0) summaryParts.push(`${activeCount} active`);
-  if (needsCount > 0) summaryParts.push(`${needsCount} needs direction`);
-  const offlineCount = workersArray.length - activeCount - needsCount;
-  if (offlineCount > 0) summaryParts.push(`${offlineCount} offline`);
-  if (summaryParts.length === 0 && workersArray.length > 0) summaryParts.push(`${workersArray.length} offline`);
+  const toggleSelect = (id: string) => setSelectedId(selectedId === id ? null : id);
 
   return (
     <main className="h-screen flex flex-col bg-[var(--bg)]">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 pt-5 pb-3">
+      <div className="flex items-center justify-between px-4 sm:px-6 pt-4 pb-2 sm:pt-5 sm:pb-3">
         <div />
         <div className="text-center">
-          <h1 className="text-base font-bold tracking-[0.2em] uppercase text-[var(--text)]">Find My Agents</h1>
+          <h1 className="text-sm sm:text-base font-bold tracking-[0.2em] uppercase text-[var(--text)]">Find My Agents</h1>
           <div className="flex items-center justify-center gap-2 mt-1">
-            <span className={`w-2 h-2 rounded-full ${connected ? "bg-[var(--dot-active)]" : "bg-[var(--dot-needs)]"}`} />
+            <span className={`w-2 h-2 rounded-full ${connected ? "bg-[var(--dot-active)]" : "bg-[var(--dot-offline)]"}`} />
             <span className="text-[11px] text-[var(--text-muted)]">
               {connected ? "Connected" : "Reconnecting..."}
             </span>
@@ -274,9 +242,39 @@ export default function Home() {
         </button>
       </div>
 
+      {/* Summary bar */}
+      <div className="flex items-center justify-center gap-3 px-4 pb-2 sm:pb-3">
+        <div className="flex items-center gap-4 text-[11px] text-[var(--text-muted)]">
+          {workersArray.length === 0 ? (
+            <span>No agents</span>
+          ) : (
+            <>
+              {activeCount > 0 && (
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[var(--dot-active)]" />
+                  {activeCount} active
+                </span>
+              )}
+              {needsCount > 0 && (
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[var(--dot-needs)]" />
+                  {needsCount} needs direction
+                </span>
+              )}
+              {offlineCount > 0 && (
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[var(--dot-offline)]" />
+                  {offlineCount} offline
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Settings dropdown */}
       {showSettings && (
-        <div className="mx-auto mb-2 w-full max-w-md px-6">
+        <div className="mx-auto mb-2 w-full max-w-md px-4 sm:px-6">
           <form
             onSubmit={(e) => { e.preventDefault(); updateUrl(urlInput); }}
             className="flex gap-2 p-3 bg-[var(--bg-card)] border border-[var(--border)] rounded-lg shadow-sm"
@@ -295,21 +293,55 @@ export default function Home() {
       )}
 
       {/* Main layout */}
-      <div className="flex-1 flex gap-5 px-6 pb-6 min-h-0">
-        <div className="w-[280px] shrink-0 flex flex-col">
-          <div className="mb-3">
-            <h2 className="text-sm font-semibold">All Agents</h2>
-            <p className="text-xs text-[var(--text-muted)]">{summaryParts.join(", ") || "No agents"}</p>
-          </div>
-          <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-            {workersArray.map((w) => (
-              <AgentCard key={w.id} worker={w} selected={selectedId === w.id} onClick={() => setSelectedId(selectedId === w.id ? null : w.id)} />
-            ))}
-          </div>
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {/* Mobile: status tiles stacked full-width */}
+        <div className="block md:hidden h-full overflow-y-auto px-4 pb-4 space-y-3">
+          {workersArray.length === 0 && (
+            <div className="flex items-center justify-center h-32">
+              <p className="text-sm text-[var(--text-muted)]">No agents detected</p>
+            </div>
+          )}
+          {workersArray.map((w) => (
+            <StatusTile
+              key={w.id}
+              worker={w}
+              selected={selectedId === w.id}
+              onClick={() => toggleSelect(w.id)}
+            />
+          ))}
         </div>
 
-        <div className="flex-1 min-w-0">
-          <AgentMap workers={workersArray} selectedId={selectedId} onSelect={(id) => setSelectedId(selectedId === id ? null : id)} />
+        {/* Desktop: sidebar + status grid */}
+        <div className="hidden md:flex gap-5 px-6 pb-6 h-full">
+          {/* Compact sidebar */}
+          <div className="w-[200px] shrink-0 flex flex-col">
+            <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-2">Agents</h2>
+            <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+              {workersArray.map((w) => (
+                <AgentCard key={w.id} worker={w} selected={selectedId === w.id} onClick={() => toggleSelect(w.id)} />
+              ))}
+            </div>
+          </div>
+
+          {/* Status grid */}
+          <div className="flex-1 min-w-0 overflow-y-auto">
+            {workersArray.length === 0 ? (
+              <div className="h-full flex items-center justify-center bg-[var(--bg-panel)] rounded-2xl border border-[var(--border)]">
+                <p className="text-sm text-[var(--text-muted)]">No agents detected</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                {workersArray.map((w) => (
+                  <StatusTile
+                    key={w.id}
+                    worker={w}
+                    selected={selectedId === w.id}
+                    onClick={() => toggleSelect(w.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
