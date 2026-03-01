@@ -31,9 +31,36 @@ export function sendInputToTty(tty: string, text: string): { ok: boolean; error?
     return { ok: false, error: `Write tmp failed: ${msg.slice(0, 150)}` };
   }
 
-  // Step 1: AppleScript reads file and types into correct Terminal tab
+  // Step 1: AppleScript types text into the correct Terminal tab.
+  // Long text is chunked (500 chars each) to avoid `do script` truncation.
+  // Each chunk appends to Claude Code's input buffer in raw mode.
+  const CHUNK_SIZE = 500;
+  const chunks: string[] = [];
+  for (let i = 0; i < cleaned.length; i += CHUNK_SIZE) {
+    chunks.push(cleaned.slice(i, i + CHUNK_SIZE));
+  }
+
+  // Write each chunk to its own temp file (avoids AppleScript string escaping)
+  const chunkFiles: string[] = [];
+  try {
+    for (const chunk of chunks) {
+      const f = join(tmpdir(), `hive-input-${randomBytes(8).toString("hex")}.txt`);
+      writeFileSync(f, chunk, { encoding: "utf-8", mode: 0o600 });
+      chunkFiles.push(f);
+    }
+  } catch (err: unknown) {
+    for (const f of chunkFiles) cleanup(f);
+    cleanup(tmpFile);
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Write chunks failed: ${msg.slice(0, 150)}` };
+  }
+
+  // Build AppleScript that sends each chunk sequentially with small delays
+  const readChunks = chunkFiles
+    .map((f, i) => `  set chunk${i} to read POSIX file "${f}" as «class utf8»\n  do script chunk${i} in targetTab${i < chunkFiles.length - 1 ? "\n  delay 0.05" : ""}`)
+    .join("\n");
+
   const script = `
-set inputText to read POSIX file "${tmpFile}" as «class utf8»
 tell application "Terminal"
   set targetTTY to "${device}"
   set targetTab to missing value
@@ -49,7 +76,7 @@ tell application "Terminal"
     if targetTab is not missing value then exit repeat
   end repeat
   if targetTab is missing value then error "TTY not found in Terminal.app"
-  do script inputText in targetTab
+${readChunks}
   set selected of targetTab to true
   set index of targetWin to 1
   activate
@@ -58,15 +85,17 @@ end tell
 
   try {
     execFileSync("/usr/bin/osascript", ["-e", script], {
-      timeout: 8000,
+      timeout: 15000,
       encoding: "utf-8",
     });
   } catch (err: unknown) {
+    for (const f of chunkFiles) cleanup(f);
     cleanup(tmpFile);
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, error: `Type failed: ${msg.slice(0, 180)}` };
   }
 
+  for (const f of chunkFiles) cleanup(f);
   cleanup(tmpFile);
 
   // Step 2: Send Return keystroke via CGEvent (HID-level, no Apple Events)
