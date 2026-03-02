@@ -16,7 +16,7 @@ import { sendInputToTty, sendSelectionToTty } from "./tty-input.js";
  * Grace period: 3s so a human on the dashboard can intervene first.
  */
 
-const GRACE_PERIOD_MS = 3_000;
+const GRACE_PERIOD_MS = 0;
 const COOLDOWN_MS = 4_000;
 
 export class AutoPilot {

@@ -34,6 +34,7 @@ interface ScratchpadEntry {
 export class TelemetryReceiver {
   private workers = new Map<string, WorkerState>();
   private listeners: Array<(workerId: string, state: WorkerState) => void> = [];
+  private removalListeners: Array<(workerId: string) => void> = [];
   private server: Server | null = null;
   private port: number;
   private app: ReturnType<typeof express> | null = null;
@@ -679,6 +680,10 @@ export class TelemetryReceiver {
         this.pendingHooks.delete(sid);
       }
     }
+    // Notify listeners so the dashboard can remove the dead worker
+    for (const cb of this.removalListeners) {
+      cb(id);
+    }
   }
 
   get(id: string): WorkerState | undefined {
@@ -689,8 +694,58 @@ export class TelemetryReceiver {
     return Array.from(this.workers.values());
   }
 
+  /**
+   * Write worker state to ~/.hive/workers.json every tick cycle.
+   * Agents read this file directly (no network needed — bypasses sandbox).
+   * Includes quadrant assignment (sorted by startedAt) so each agent can
+   * self-identify by matching its own PID or TTY.
+   */
+  writeWorkersFile(): void {
+    const workers = this.getAll()
+      .sort((a, b) => a.startedAt - b.startedAt);
+    const slots: Array<{
+      quadrant: number;
+      id: string;
+      pid: number;
+      tty: string | undefined;
+      project: string;
+      projectName: string;
+      status: string;
+      currentAction: string | null;
+      lastAction: string;
+      startedAt: number;
+    }> = [];
+    for (let i = 0; i < workers.length && i < 4; i++) {
+      const w = workers[i];
+      slots.push({
+        quadrant: i + 1,
+        id: w.id,
+        pid: w.pid,
+        tty: w.tty,
+        project: w.project,
+        projectName: w.projectName,
+        status: w.status,
+        currentAction: w.currentAction,
+        lastAction: w.lastAction,
+        startedAt: w.startedAt,
+      });
+    }
+    try {
+      const hiveDir = join(HOME, ".hive");
+      if (!existsSync(hiveDir)) mkdirSync(hiveDir, { recursive: true });
+      writeFileSync(
+        join(hiveDir, "workers.json"),
+        JSON.stringify({ updatedAt: Date.now(), workers: slots }, null, 2) + "\n"
+      );
+    } catch { /* non-critical */ }
+  }
+
   onUpdate(callback: (workerId: string, state: WorkerState) => void): void {
     this.listeners.push(callback);
+  }
+
+  onRemoval(callback: (workerId: string) => void): void {
+    this.removalListeners.push(callback);
   }
 
   tick(): void {

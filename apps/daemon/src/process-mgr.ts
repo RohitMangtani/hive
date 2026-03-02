@@ -104,9 +104,15 @@ export class ProcessManager {
       this.workers.delete(id);
     });
 
-    // Send the initial task if provided
+    // Send the initial task with Hive dispatch context
     if (task) {
-      this.sendMessage(id, task);
+      const preamble = [
+        `You are a Hive-managed agent (worker ${id}).`,
+        `You can dispatch work to other agents via the Hive REST API at http://127.0.0.1:3001.`,
+        `Auth: read token from ~/.hive/token. See ~/.claude/CLAUDE.md for full dispatch docs.`,
+        `Your task:\n\n${task}`,
+      ].join(" ");
+      this.sendMessage(id, preamble);
     }
 
     return id;

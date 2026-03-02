@@ -43,16 +43,29 @@ except:
 
 TIMESTAMP=$(python3 -c "import time; print(int(time.time() * 1000))" 2>/dev/null || echo "0")
 
+# Read token from env or fallback to file
+TOKEN="${HIVE_TOKEN:-}"
+if [ -z "$TOKEN" ] && [ -f "$HOME/.hive/token" ]; then
+  TOKEN=$(cat "$HOME/.hive/token")
+fi
+
+# Build JSON payload safely (jq handles all escaping)
+PAYLOAD=$(python3 -c "
+import json, sys
+print(json.dumps({
+    'worker_id': sys.argv[1],
+    'session_id': sys.argv[1],
+    'event': sys.argv[2],
+    'tool_name': sys.argv[3],
+    'summary': sys.argv[4],
+    'timestamp': int(sys.argv[5])
+}))
+" "$WORKER_ID" "$HOOK_EVENT" "$TOOL_NAME" "$SUMMARY" "$TIMESTAMP" 2>/dev/null || echo '{}')
+
 # POST telemetry event (fire-and-forget in background)
 curl -s -X POST "${DAEMON_URL}/telemetry" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"worker_id\": \"${WORKER_ID}\",
-    \"session_id\": \"${WORKER_ID}\",
-    \"event\": \"${HOOK_EVENT}\",
-    \"tool_name\": \"${TOOL_NAME}\",
-    \"summary\": \"${SUMMARY}\",
-    \"timestamp\": ${TIMESTAMP}
-  }" >/dev/null 2>&1 &
+  -H "Authorization: Bearer ${TOKEN}" \
+  -d "$PAYLOAD" >/dev/null 2>&1 &
 
 exit 0
