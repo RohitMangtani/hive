@@ -37,7 +37,7 @@ export function SpawnDialog({ onSpawn, onClose }: SpawnDialogProps) {
 
       {/* Dialog */}
       <div className="relative bg-[var(--bg-card)] border border-[var(--border)] rounded-lg w-full max-w-lg mx-4 p-6">
-        <h2 className="text-lg font-semibold mb-4">Spawn Worker</h2>
+        <h2 className="text-lg font-semibold mb-4">Spawn Agent</h2>
 
         {/* Project grid */}
         <div className="grid grid-cols-2 gap-2 mb-4">

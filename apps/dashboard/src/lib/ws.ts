@@ -15,10 +15,12 @@ export function useHive(daemonUrl: string) {
   const subscribedRef = useRef<string | null>(null);
 
   const send = useCallback(
-    (msg: DaemonMessage) => {
+    (msg: DaemonMessage): boolean => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify(msg));
+        return true;
       }
+      return false;
     },
     []
   );
@@ -52,7 +54,6 @@ export function useHive(daemonUrl: string) {
 
       ws.onopen = () => {
         setConnected(true);
-        setAuthFailed(false);
         // Re-subscribe if we had a subscription before reconnect
         if (subscribedRef.current) {
           ws.send(JSON.stringify({ type: "subscribe", workerId: subscribedRef.current }));
@@ -98,7 +99,16 @@ export function useHive(daemonUrl: string) {
               setChatEntries((prev) => {
                 const next = new Map(prev);
                 const existing = next.get(wid) ?? [];
-                const updated = [...existing, ...newEntries];
+                // Dedup: skip incoming user messages that match a recent optimistic entry.
+                // Optimistic entries have a timestamp; server echoes don't (or have a different one).
+                // Match by role + text within the last 5 entries to avoid duplicates.
+                const recentTexts = new Set(
+                  existing.slice(-5).filter(e => e.role === "user").map(e => e.text)
+                );
+                const deduped = newEntries.filter(e =>
+                  !(e.role === "user" && recentTexts.has(e.text))
+                );
+                const updated = [...existing, ...deduped];
                 // Keep within limit
                 if (updated.length > MAX_CHAT_ENTRIES) {
                   updated.splice(0, updated.length - MAX_CHAT_ENTRIES);
@@ -162,5 +172,19 @@ export function useHive(daemonUrl: string) {
     };
   }, [daemonUrl]);
 
-  return { connected, workers, chatEntries, send, subscribeTo };
+  /** Optimistically add a user message to the chat (shows immediately before server echo) */
+  const addOptimisticEntry = useCallback(
+    (workerId: string, text: string) => {
+      const entry: ChatEntry = { role: "user", text, timestamp: Date.now() };
+      setChatEntries((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(workerId) ?? [];
+        next.set(workerId, [...existing, entry]);
+        return next;
+      });
+    },
+    []
+  );
+
+  return { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry };
 }

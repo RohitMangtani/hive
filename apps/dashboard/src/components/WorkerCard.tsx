@@ -89,14 +89,20 @@ export function WorkerCard({
       )}
 
       <div className="text-xs text-[var(--text-muted)] space-y-0.5">
-        {worker.currentAction && (
-          <p className="truncate">
-            <span className="text-zinc-500">now:</span> {worker.currentAction}
-          </p>
+        {worker.status === "idle" ? (
+          <p className="truncate text-zinc-500">Idle</p>
+        ) : (
+          <>
+            {worker.currentAction && (
+              <p className="truncate">
+                <span className="text-zinc-500">now:</span> {worker.currentAction}
+              </p>
+            )}
+            <p className="truncate">
+              <span className="text-zinc-500">last:</span> {worker.lastAction}
+            </p>
+          </>
         )}
-        <p className="truncate">
-          <span className="text-zinc-500">last:</span> {worker.lastAction}
-        </p>
         <div className="flex justify-between mt-1.5">
           <span className="text-zinc-600">
             pid {worker.pid}
