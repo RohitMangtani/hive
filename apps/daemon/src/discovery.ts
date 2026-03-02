@@ -908,8 +908,8 @@ export class ProcessDiscovery {
             .trim();
           // Skip session continuation boilerplate
           if (direction.startsWith("This session is being continued")) continue;
-          // Truncate to ~80 chars for display
-          if (direction.length > 80) direction = direction.slice(0, 77) + "...";
+          // Truncate for display — 2 lines at 10px ≈ 60 chars
+          if (direction.length > 60) direction = direction.slice(0, 57) + "...";
           result.lastDirection = direction;
           break;
         }

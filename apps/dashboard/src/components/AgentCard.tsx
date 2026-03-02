@@ -106,7 +106,7 @@ export function AgentCard({
       </p>
 
       {!stuck && worker.lastDirection && (
-        <p className="text-[10px] text-[var(--text-muted)] truncate opacity-50 mt-0.5">
+        <p className="text-[10px] leading-tight text-[var(--text-muted)] line-clamp-2 opacity-50 mt-0.5">
           {worker.lastDirection}
         </p>
       )}
