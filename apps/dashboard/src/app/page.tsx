@@ -272,10 +272,6 @@ function ChatPanel({
         <div
           ref={scrollRef}
           className="chat-scroll absolute inset-0 overflow-y-auto p-4 space-y-3 overscroll-contain"
-          onTouchMove={() => {
-            const el = document.activeElement as HTMLElement | null;
-            if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) el.blur();
-          }}
         >
           {entries.length === 0 && (
             <p className="text-center text-[var(--text-light)] text-xs mt-6">No messages yet</p>
