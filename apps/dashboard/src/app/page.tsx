@@ -330,7 +330,7 @@ function ChatPanel({
 
         {/* Messages */}
         <div className="relative flex-1 min-h-0">
-        {/* Scroll to bottom button */}
+        {/* Scroll nav buttons — down on left, up on right */}
         <div className="absolute left-2 bottom-2 z-10">
           <button
             type="button"
@@ -338,6 +338,29 @@ function ChatPanel({
             className="chat-nav-btn"
             aria-label="Scroll to bottom"
           >&#9660;</button>
+        </div>
+        <div className="absolute right-2 bottom-2 z-10">
+          <button
+            type="button"
+            onClick={() => {
+              const el = scrollRef.current;
+              if (!el) return;
+              const bubbles = el.querySelectorAll(".chat-bubble.group\\/msg");
+              const scrollTop = el.scrollTop;
+              // Find the last agent message whose top is above current scroll position
+              let target: Element | null = null;
+              for (let j = bubbles.length - 1; j >= 0; j--) {
+                const rect = bubbles[j].getBoundingClientRect();
+                const elRect = el.getBoundingClientRect();
+                const relTop = rect.top - elRect.top + scrollTop;
+                if (relTop < scrollTop - 5) { target = bubbles[j]; break; }
+              }
+              if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+              else el.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+            className="chat-nav-btn"
+            aria-label="Scroll to previous message"
+          >&#9650;</button>
         </div>
         <div
           ref={scrollRef}
@@ -393,12 +416,11 @@ function ChatPanel({
                           void btn.offsetHeight;
                           btn.style.animation = "btn-flash 0.4s ease-out";
                           setTimeout(() => { btn.textContent = "\u2398"; btn.style.animation = ""; }, 1200);
-                          const msgEl = btn.closest(".chat-bubble");
-                          if (msgEl) msgEl.scrollIntoView({ behavior: "smooth", block: "start" });
                         }}
                         className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center text-[12px] text-[var(--text-light)] hover:text-[var(--text)] bg-[var(--bg-card)] border border-[var(--border)] rounded-md sm:opacity-0 sm:group-hover/msg:opacity-100 transition-all duration-150 active:scale-90"
-                        title="Copy & scroll to top"
+                        title="Copy"
                       >&#9112;</button>
+                      <pre className="whitespace-pre-wrap break-words font-sans text-[var(--text)] pr-8">{entry.text}</pre>
                     </div>
                   </div>
                 );
