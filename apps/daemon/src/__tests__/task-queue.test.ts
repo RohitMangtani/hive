@@ -58,18 +58,6 @@ describe("TaskQueue", () => {
     expect(queue.isCompleted("q1")).toBe(true);
   });
 
-  it("takes a task by index", () => {
-    queue.push("First");
-    queue.push("Second");
-    const taken = queue.take(0);
-    expect(taken?.task).toBe("First");
-    expect(queue.length).toBe(1);
-  });
-
-  it("returns undefined for out-of-bounds take", () => {
-    expect(queue.take(5)).toBeUndefined();
-  });
-
   it("supports blockedBy field", () => {
     const t1 = queue.push("Step 1");
     const t2 = queue.push("Step 2", undefined, 10, t1.id);

@@ -91,17 +91,4 @@ export class TaskQueue {
   get length(): number {
     return this.tasks.length;
   }
-
-  /** Remove and return a task by index. */
-  take(index: number): QueuedTask | undefined {
-    if (index < 0 || index >= this.tasks.length) return undefined;
-    const [task] = this.tasks.splice(index, 1);
-    this.save();
-    return task;
-  }
-
-  /** Iterate tasks for dispatch. Returns index-task pairs. */
-  entries(): Array<[number, QueuedTask]> {
-    return this.tasks.map((t, i) => [i, t]);
-  }
 }

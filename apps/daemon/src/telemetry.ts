@@ -543,7 +543,9 @@ export class TelemetryReceiver {
     );
     if (idleWorkers.length === 0) return;
 
-    for (const [i, task] of this.taskQueue.entries()) {
+    // Snapshot the queue — iterate all eligible tasks, remove dispatched ones by ID.
+    const tasks = this.taskQueue.getAll();
+    for (const task of tasks) {
       if (task.blockedBy && !this.taskQueue.isCompleted(task.blockedBy)) continue;
 
       let target = idleWorkers.find(w => task.project && w.project.includes(task.project));
@@ -564,10 +566,11 @@ export class TelemetryReceiver {
         this.trackDispatch(target.id, `Queue ${task.id}: ${task.task.slice(0, 150)}`);
         this.notifyExternal(target);
 
-        this.taskQueue.take(i);
+        this.taskQueue.remove(task.id);
         this.taskQueue.markCompleted(task.id);
         console.log(`[task-queue] Dispatched ${task.id} to ${target.tty} (${this.taskQueue.length} remaining)`);
 
+        // One task per worker per tick
         const targetIdx = idleWorkers.indexOf(target);
         if (targetIdx >= 0) idleWorkers.splice(targetIdx, 1);
         if (idleWorkers.length === 0) break;
