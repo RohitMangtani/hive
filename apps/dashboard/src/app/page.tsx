@@ -322,14 +322,8 @@ function ChatPanel({
 
         {/* Messages */}
         <div className="relative flex-1 min-h-0">
-        {/* Scroll nav buttons */}
-        <div className="absolute right-2 bottom-2 z-10 flex flex-col gap-1.5">
-          <button
-            type="button"
-            onClick={() => { if (scrollRef.current) scrollRef.current.scrollTo({ top: 0, behavior: "smooth" }); }}
-            className="chat-nav-btn"
-            aria-label="Scroll to top"
-          >&#9650;</button>
+        {/* Scroll to bottom button */}
+        <div className="absolute right-2 bottom-2 z-10">
           <button
             type="button"
             onClick={() => { if (scrollRef.current) scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }}
