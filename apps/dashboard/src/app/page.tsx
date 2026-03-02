@@ -227,14 +227,10 @@ function ChatPanel({
     }
   }, [entries.length]);
 
-  // On mount: snap chat to bottom + scroll the page down to show chat area
+  // On mount: snap chat messages to bottom
   useEffect(() => {
     const el = scrollRef.current;
     if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
-    const t = setTimeout(() => {
-      textareaRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-    }, 320);
-    return () => clearTimeout(t);
   }, []);
 
   // Auto-resize textarea to fit content
