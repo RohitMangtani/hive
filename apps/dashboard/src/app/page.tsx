@@ -385,12 +385,15 @@ function ChatPanel({
                     <div className="relative bg-[var(--bg-panel)] border border-[var(--border)] rounded-2xl rounded-bl-md px-4 py-3 text-[15px] leading-relaxed">
                       <button
                         type="button"
-                        onClick={() => {
+                        onClick={(e) => {
                           navigator.clipboard.writeText(entry.text);
-                          const btn = document.getElementById(`copy-${worker.id}-${i}`);
-                          if (btn) { btn.textContent = "\u2713"; setTimeout(() => { btn.textContent = "\u2398"; }, 1200); }
+                          const btn = e.currentTarget;
+                          btn.textContent = "\u2713";
+                          btn.style.animation = "none";
+                          void btn.offsetHeight;
+                          btn.style.animation = "btn-flash 0.4s ease-out";
+                          setTimeout(() => { btn.textContent = "\u2398"; btn.style.animation = ""; }, 1200);
                         }}
-                        id={`copy-${worker.id}-${i}`}
                         className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center text-[12px] text-[var(--text-light)] hover:text-[var(--text)] bg-[var(--bg-card)] border border-[var(--border)] rounded-md sm:opacity-0 sm:group-hover/msg:opacity-100 transition-all duration-150 active:scale-90"
                         title="Copy"
                       >&#9112;</button>
@@ -398,7 +401,12 @@ function ChatPanel({
                       <button
                         type="button"
                         onClick={(e) => {
-                          const msgEl = (e.target as HTMLElement).closest(".chat-bubble");
+                          const btn = e.currentTarget;
+                          btn.style.animation = "none";
+                          void btn.offsetHeight;
+                          btn.style.animation = "btn-flash 0.4s ease-out";
+                          setTimeout(() => { btn.style.animation = ""; }, 400);
+                          const msgEl = btn.closest(".chat-bubble");
                           if (msgEl) msgEl.scrollIntoView({ behavior: "smooth", block: "start" });
                         }}
                         className="absolute bottom-2 right-2 w-7 h-7 flex items-center justify-center text-[12px] text-[var(--text-light)] hover:text-[var(--text)] bg-[var(--bg-card)] border border-[var(--border)] rounded-md sm:opacity-0 sm:group-hover/msg:opacity-100 transition-all duration-150 active:scale-90"

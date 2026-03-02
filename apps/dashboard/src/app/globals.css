@@ -211,6 +211,11 @@
   }
 }
 
+@keyframes btn-flash {
+  0% { background: rgba(255, 255, 255, 0.35); }
+  100% { background: var(--bg-card); }
+}
+
 @keyframes bubble-in {
   from {
     opacity: 0;
