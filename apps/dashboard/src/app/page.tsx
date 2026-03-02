@@ -356,10 +356,10 @@ function ChatPanel({
                         type="button"
                         onClick={() => {
                           navigator.clipboard.writeText(entry.text);
-                          const btn = document.getElementById(`copy-${i}`);
+                          const btn = document.getElementById(`copy-${worker.id}-${i}`);
                           if (btn) { btn.textContent = "\u2713"; setTimeout(() => { btn.textContent = "\u2398"; }, 1200); }
                         }}
-                        id={`copy-${i}`}
+                        id={`copy-${worker.id}-${i}`}
                         className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center text-[12px] text-[var(--text-light)] hover:text-[var(--text)] bg-[var(--bg-card)] border border-[var(--border)] rounded-md sm:opacity-0 sm:group-hover/msg:opacity-100 transition-all duration-150 active:scale-90"
                         title="Copy"
                       >&#9112;</button>
@@ -439,7 +439,7 @@ export default function Home() {
   // Per-agent draft text — persists in localStorage (survives browser close/refresh).
   // Only cleared when user presses X to close the chat popover.
   const draftsRef = useRef<Map<string, string>>(new Map());
-  const [draftKey, setDraftKey] = useState(0); // force re-render on draft changes
+  const [, setDraftTick] = useState(0); // trigger re-render when draft changes
 
   // Load drafts from localStorage on mount
   useEffect(() => {
@@ -450,7 +450,7 @@ export default function Home() {
         for (const [k, v] of Object.entries(parsed)) {
           if (v) draftsRef.current.set(k, v);
         }
-        setDraftKey((k) => k + 1);
+        setDraftTick((k) => k + 1);
       }
     } catch { /* corrupted storage, start fresh */ }
   }, []);
@@ -489,6 +489,14 @@ export default function Home() {
   const idleCount = numbered.filter(({ worker: w }) => w.status === "idle").length;
   const emptyCount = MAX_SLOTS - numbered.length;
   const selectedEntry = selectedId ? numbered.find(({ worker: w }) => w.id === selectedId) : null;
+
+  // Clear stale selection if the worker disappeared
+  useEffect(() => {
+    if (selectedId && !selectedEntry) {
+      setSelectedId(null);
+      subscribeTo(null);
+    }
+  }, [selectedId, selectedEntry, subscribeTo]);
 
   const toggleSelect = useCallback((id: string) => {
     const nextId = selectedId === id ? null : id;
@@ -631,7 +639,7 @@ export default function Home() {
           draft={draftsRef.current.get(selectedEntry.worker.id) || ""}
           onDraftChange={(v) => {
             draftsRef.current.set(selectedEntry.worker.id, v);
-            setDraftKey((k) => k + 1);
+            setDraftTick((k) => k + 1);
             try {
               const obj = Object.fromEntries(draftsRef.current);
               localStorage.setItem("hive_drafts", JSON.stringify(obj));

@@ -62,7 +62,14 @@ export function useHive(daemonUrl: string) {
         setConnected(true);
         // Re-subscribe if we had a subscription before reconnect
         if (subscribedRef.current) {
-          ws.send(JSON.stringify({ type: "subscribe", workerId: subscribedRef.current }));
+          const wid = subscribedRef.current;
+          // Clear stale entries so fresh history from server replaces them
+          setChatEntries((prev) => {
+            const next = new Map(prev);
+            next.delete(wid);
+            return next;
+          });
+          ws.send(JSON.stringify({ type: "subscribe", workerId: wid }));
         }
       };
 
