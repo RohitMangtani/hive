@@ -268,7 +268,7 @@ function ChatPanel({
             const dy = e.touches[0].clientY - touchStartY.current;
             if (dy > 20) {
               touchStartY.current = null;
-              if (document.activeElement === textareaRef.current) textareaRef.current.blur();
+              if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
               else onDismiss();
             }
           }}
@@ -277,7 +277,7 @@ function ChatPanel({
             const dy = e.changedTouches[0].clientY - touchStartY.current;
             touchStartY.current = null;
             if (dy > 20) {
-              if (document.activeElement === textareaRef.current) textareaRef.current.blur();
+              if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
               else onDismiss();
             }
           }}
@@ -287,7 +287,7 @@ function ChatPanel({
             const dy = e.clientY - touchStartY.current;
             touchStartY.current = null;
             if (dy > 20) {
-              if (document.activeElement === textareaRef.current) textareaRef.current.blur();
+              if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
               else onDismiss();
             }
           }}
