@@ -4,3 +4,9 @@ dist/
 .env
 .env.local
 *.tsbuildinfo
+.vercel
+
+# Internal working artifacts
+.claude/
+HANDOFF-*.md
+docs/plans/
