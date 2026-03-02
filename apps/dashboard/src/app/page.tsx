@@ -261,18 +261,18 @@ function ChatPanel({
       <div className="chat-panel flex-1 min-h-0 flex flex-col border-t border-[var(--border)] bg-[var(--bg-card)]">
         {/* Header — swipe down to dismiss (keeps draft), X to close (clears draft) */}
         <div
-          className="relative flex items-center justify-between px-4 pt-4 pb-3 border-b border-[var(--border)] shrink-0 cursor-grab active:cursor-grabbing"
+          className="relative flex items-center justify-between px-4 pt-5 pb-4 border-b border-[var(--border)] shrink-0 cursor-grab active:cursor-grabbing"
           onTouchStart={(e) => { touchStartY.current = e.touches[0].clientY; }}
           onTouchMove={(e) => {
             if (touchStartY.current === null) return;
             const dy = e.touches[0].clientY - touchStartY.current;
-            if (dy > 30) { touchStartY.current = null; textareaRef.current?.blur(); }
+            if (dy > 20) { touchStartY.current = null; textareaRef.current?.blur(); }
           }}
           onMouseDown={(e) => { touchStartY.current = e.clientY; }}
           onMouseMove={(e) => {
             if (touchStartY.current === null || !(e.buttons & 1)) return;
             const dy = e.clientY - touchStartY.current;
-            if (dy > 30) { touchStartY.current = null; textareaRef.current?.blur(); }
+            if (dy > 20) { touchStartY.current = null; textareaRef.current?.blur(); }
           }}
         >
           {/* Swipe handle */}
