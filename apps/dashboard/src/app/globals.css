@@ -107,10 +107,9 @@
     animation: bubble-in 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
   }
 
-  /* Smooth momentum scroll for chat */
+  /* Momentum scroll for chat */
   .chat-scroll {
     -webkit-overflow-scrolling: touch;
-    scroll-behavior: smooth;
   }
 
   /* Send button — satisfying press */
