@@ -229,11 +229,19 @@ function ChatPanel({
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
 
-  // Scroll chat to absolute bottom on any entries change (new messages, initial load, etc.)
-  // Double-rAF ensures DOM layout is fully settled before measuring scrollHeight
+  const prevEntriesLen = useRef(0);
+
+  // Auto-scroll to bottom when new messages arrive, but only if:
+  // 1. The user is already near the bottom (within 150px), OR
+  // 2. It's the initial load (entries went from 0 to N)
+  // This prevents snapping back when the user is reading older messages.
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) {
+    if (!el) return;
+    const wasEmpty = prevEntriesLen.current === 0;
+    prevEntriesLen.current = entries.length;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+    if (nearBottom || wasEmpty) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
       });
@@ -514,6 +522,11 @@ export default function Home() {
   const emptyCount = MAX_SLOTS - numbered.length;
   const selectedEntry = selectedId ? numbered.find(({ worker: w }) => w.id === selectedId) : null;
 
+  // Memoize entries slice — only changes when the underlying array changes,
+  // not on every re-render from worker status broadcasts
+  const rawEntries = selectedEntry ? chatEntries.get(selectedEntry.worker.id) : undefined;
+  const memoEntries = useMemo(() => (rawEntries ?? []).slice(-50), [rawEntries]);
+
   // Clear stale selection if the worker disappeared
   useEffect(() => {
     if (selectedId && !selectedEntry) {
@@ -524,6 +537,7 @@ export default function Home() {
 
   const toggleSelect = useCallback((id: string) => {
     const nextId = selectedId === id ? null : id;
+    setChatExpanded(false); // reset to middle position when switching agents
     setSelectedId(nextId);
     subscribeTo(nextId);
   }, [selectedId, subscribeTo]);
@@ -662,7 +676,7 @@ export default function Home() {
           key={selectedEntry.worker.id}
           worker={selectedEntry.worker}
           num={selectedEntry.num}
-          entries={(chatEntries.get(selectedEntry.worker.id) ?? []).slice(-50)}
+          entries={memoEntries}
           draft={draftsRef.current.get(selectedEntry.worker.id) || ""}
           expanded={chatExpanded}
           onExpand={setChatExpanded}
