@@ -312,7 +312,7 @@ function ChatPanel({
         {/* Header — swipe up = expand (top lock), swipe down = collapse/dismiss */}
         <div
           ref={headerRef}
-          className="relative flex items-center justify-between px-4 pt-5 pb-4 border-b border-[var(--border)] shrink-0 cursor-grab active:cursor-grabbing touch-none"
+          className="relative flex items-center justify-between px-4 pt-5 pb-4 border-b border-[var(--border)] shrink-0 cursor-grab active:cursor-grabbing touch-none bg-[var(--bg-card)]/95 backdrop-blur-sm"
         >
           {/* Swipe handle */}
           <div className="absolute top-1.5 left-1/2 -translate-x-1/2 w-8 h-1 rounded-full bg-[var(--border-light)]" />
@@ -583,12 +583,12 @@ export default function Home() {
               {connected ? (isViewer ? "Viewing" : "Connected") : "Reconnecting..."}
             </span>
           </div>
-          {/* Unlock / Lock button — top right */}
+          {/* Unlock / Lock button — top left */}
           {isViewer ? (
             <button
               type="button"
               onClick={() => setShowUnlock(true)}
-              className="absolute right-0 top-0 text-[10px] text-[var(--text-light)] hover:text-[var(--text)] transition-colors px-2 py-1 cursor-pointer"
+              className="absolute left-0 top-0 text-[10px] text-[var(--text-light)] hover:text-[var(--text)] transition-colors px-2 py-1 cursor-pointer"
               title="Enter admin token"
             >
               &#128274;
@@ -596,8 +596,8 @@ export default function Home() {
           ) : (
             <button
               type="button"
-              onClick={() => { lockAdmin(); setMode("viewer"); window.location.reload(); }}
-              className="absolute right-0 top-0 text-[10px] text-[var(--text-light)] hover:text-[var(--text)] transition-colors px-2 py-1 cursor-pointer"
+              onClick={() => { if (window.confirm("Log out of admin?")) { lockAdmin(); setMode("viewer"); window.location.reload(); } }}
+              className="absolute left-0 top-0 text-[10px] text-[var(--text-light)] hover:text-[var(--text)] transition-colors px-2 py-1 cursor-pointer"
               title="Lock (return to view-only)"
             >
               &#128275;
