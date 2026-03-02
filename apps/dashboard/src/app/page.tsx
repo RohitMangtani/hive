@@ -221,6 +221,14 @@ function ChatPanel({
   const stuck = worker.status === "stuck";
   const buttons = stuck ? quickButtons(worker) : [];
 
+  // Keep callbacks in refs so the touch listener useEffect never re-runs mid-gesture
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  const onExpandRef = useRef(onExpand);
+  onExpandRef.current = onExpand;
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+
   // Scroll chat to absolute bottom on any entries change (new messages, initial load, etc.)
   // Double-rAF ensures DOM layout is fully settled before measuring scrollHeight
   useEffect(() => {
@@ -233,7 +241,8 @@ function ChatPanel({
   }, [entries]);
 
   // Native touch handlers on the pill header — { passive: false } ensures
-  // preventDefault() works on iOS Safari, preventing gesture interception
+  // preventDefault() works on iOS Safari, preventing gesture interception.
+  // Callbacks via refs so this effect only runs once (on mount).
   useEffect(() => {
     const el = headerRef.current;
     if (!el) return;
@@ -243,16 +252,16 @@ function ChatPanel({
     };
     const onMove = (e: TouchEvent) => {
       if (touchStartY.current === null) return;
-      e.preventDefault(); // prevent iOS from intercepting the gesture
+      e.preventDefault();
       const dy = e.touches[0].clientY - touchStartY.current;
       if (dy > 20) {
         touchStartY.current = null;
-        if (expanded) { onExpand(false); textareaRef.current?.blur(); }
+        if (expandedRef.current) { onExpandRef.current(false); textareaRef.current?.blur(); }
         else if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
-        else onDismiss();
-      } else if (dy < -12) {
+        else onDismissRef.current();
+      } else if (dy < -8) {
         touchStartY.current = null;
-        if (!expanded) { onExpand(true); setTimeout(() => textareaRef.current?.focus(), 350); }
+        if (!expandedRef.current) { onExpandRef.current(true); setTimeout(() => textareaRef.current?.focus(), 350); }
       }
     };
     const onEnd = (e: TouchEvent) => {
@@ -260,11 +269,11 @@ function ChatPanel({
       const dy = e.changedTouches[0].clientY - touchStartY.current;
       touchStartY.current = null;
       if (dy > 20) {
-        if (expanded) { onExpand(false); textareaRef.current?.blur(); }
+        if (expandedRef.current) { onExpandRef.current(false); textareaRef.current?.blur(); }
         else if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
-        else onDismiss();
-      } else if (dy < -12) {
-        if (!expanded) { onExpand(true); setTimeout(() => textareaRef.current?.focus(), 350); }
+        else onDismissRef.current();
+      } else if (dy < -8) {
+        if (!expandedRef.current) { onExpandRef.current(true); setTimeout(() => textareaRef.current?.focus(), 350); }
       }
     };
 
@@ -276,7 +285,7 @@ function ChatPanel({
       el.removeEventListener("touchmove", onMove);
       el.removeEventListener("touchend", onEnd);
     };
-  }, [expanded, onExpand, onDismiss]);
+  }, []); // empty deps — runs once, reads current values via refs
 
   // Refocus textarea when returning to the app (visibility change)
   useEffect(() => {
