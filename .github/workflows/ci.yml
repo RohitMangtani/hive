@@ -26,6 +26,9 @@ jobs:
       - name: Typecheck dashboard
         run: npx tsc --noEmit -p apps/dashboard/tsconfig.json
 
+      - name: Test daemon
+        run: npm -w apps/daemon run test
+
       - name: Build daemon
         run: npm -w apps/daemon run build
 
