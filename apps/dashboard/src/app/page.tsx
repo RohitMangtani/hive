@@ -227,12 +227,14 @@ function ChatPanel({
     }
   }, [entries.length]);
 
-  // Auto-focus textarea on mount and scroll it into view so user sees the chat
+  // Auto-focus textarea on mount and scroll it into view so user sees the chat.
+  // Delay scroll until after the grid shrink transition (300ms) settles.
   useEffect(() => {
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus();
+    requestAnimationFrame(() => textareaRef.current?.focus());
+    const t = setTimeout(() => {
       textareaRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-    });
+    }, 320);
+    return () => clearTimeout(t);
   }, []);
 
   // Auto-resize textarea to fit content
