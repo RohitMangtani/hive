@@ -16,7 +16,8 @@ interface AuditEntry {
   context: Record<string, unknown>;
 }
 
-const AUDIT_LOG_PATH = "/tmp/quadrant-audit.log";
+const HOME = process.env.HOME || `/Users/${process.env.USER}`;
+const AUDIT_LOG_PATH = join(HOME, ".hive", "quadrant-audit.log");
 const AUDIT_MAX_ENTRIES = 500;
 
 interface ProcessInfo {

@@ -2,7 +2,9 @@ import { execFileSync } from "child_process";
 import { writeFileSync, unlinkSync } from "fs";
 import { randomBytes } from "crypto";
 import { join } from "path";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
+
+const SEND_RETURN_BIN = process.env.SEND_RETURN_BIN || join(homedir(), "send-return");
 
 /**
  * Capture the bundle ID of the currently frontmost application.
@@ -136,7 +138,7 @@ end tell
 
   // Step 2: Send Return keystroke via CGEvent (HID-level, no Apple Events)
   try {
-    execFileSync("/Users/rmgtni/send-return", [], {
+    execFileSync(SEND_RETURN_BIN, [], {
       timeout: 3000,
       encoding: "utf-8",
     });
