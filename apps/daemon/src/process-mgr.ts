@@ -1,12 +1,26 @@
 import { spawn as cpSpawn, type ChildProcess } from "child_process";
 import { randomBytes } from "crypto";
+import { createInterface } from "readline";
 import fs from "fs";
 import path from "path";
 import type { TelemetryReceiver } from "./telemetry.js";
+import type { ChatEntry } from "./types.js";
+import { describeAction } from "./utils.js";
 
 const MAX_BUFFER_LINES = 200;
+const MAX_CHAT_HISTORY = 200;
 const IDLE_KILL_THRESHOLD = 15 * 60 * 1000; // 15 minutes
 const KILL_GRACE_PERIOD = 5000; // 5 seconds
+
+interface StreamEvent {
+  type: string;
+  subtype?: string;
+  content?: string;
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
+  session_id?: string;
+  [key: string]: unknown;
+}
 
 interface ManagedWorker {
   id: string;
@@ -20,6 +34,8 @@ export class ProcessManager {
   private telemetry: TelemetryReceiver;
   private outputHandler: ((workerId: string, data: string) => void) | null =
     null;
+  private chatEntryHandler: ((workerId: string, entries: ChatEntry[]) => void) | null = null;
+  private chatHistory = new Map<string, ChatEntry[]>();
 
   constructor(telemetry: TelemetryReceiver) {
     this.telemetry = telemetry;
@@ -42,6 +58,7 @@ export class ProcessManager {
         "--print",
         "--output-format",
         "stream-json",
+        "--verbose",
         "--input-format",
         "stream-json",
         "--permission-mode",
@@ -73,24 +90,31 @@ export class ProcessManager {
     // Register with telemetry
     this.telemetry.registerWorker(id, proc.pid || 0, project, task);
 
-    // Capture stdout
-    proc.stdout?.on("data", (data: Buffer) => {
-      const text = data.toString();
-      const lines = text.split("\n").filter((l) => l.length > 0);
-      worker.outputBuffer.push(...lines);
+    // Parse stdout line-by-line as stream-json events
+    const rl = createInterface({ input: proc.stdout! });
+    rl.on("line", (line) => {
+      // Always buffer raw output for getRecentOutput
+      worker.outputBuffer.push(line);
       while (worker.outputBuffer.length > MAX_BUFFER_LINES) {
         worker.outputBuffer.shift();
       }
-      if (this.outputHandler) {
-        this.outputHandler(id, text);
+
+      // Try parsing as JSON stream event
+      try {
+        const event: StreamEvent = JSON.parse(line);
+        this.handleStreamEvent(id, event);
+      } catch {
+        // Non-JSON line — pass through to raw handler
+        if (this.outputHandler) {
+          this.outputHandler(id, line);
+        }
       }
     });
 
     // Capture stderr
-    proc.stderr?.on("data", (data: Buffer) => {
-      const text = data.toString();
-      const lines = text.split("\n").filter((l) => l.length > 0);
-      worker.outputBuffer.push(...lines.map((l) => `[stderr] ${l}`));
+    const errRl = createInterface({ input: proc.stderr! });
+    errRl.on("line", (line) => {
+      worker.outputBuffer.push(`[stderr] ${line}`);
       while (worker.outputBuffer.length > MAX_BUFFER_LINES) {
         worker.outputBuffer.shift();
       }
@@ -102,6 +126,7 @@ export class ProcessManager {
       this.cleanupHooks(project);
       this.telemetry.removeWorker(id);
       this.workers.delete(id);
+      this.chatHistory.delete(id);
     });
 
     // Send the initial task with Hive dispatch context
@@ -127,6 +152,9 @@ export class ProcessManager {
       content: message,
     });
     worker.proc.stdin.write(payload + "\n");
+
+    // Emit user message to chat history + subscribers
+    this.emitChatEntry(workerId, { role: "user", text: message, timestamp: Date.now() });
     return true;
   }
 
@@ -170,6 +198,87 @@ export class ProcessManager {
 
   setOutputHandler(fn: (workerId: string, data: string) => void): void {
     this.outputHandler = fn;
+  }
+
+  setChatEntryHandler(fn: (workerId: string, entries: ChatEntry[]) => void): void {
+    this.chatEntryHandler = fn;
+  }
+
+  getChatHistory(workerId: string): ChatEntry[] {
+    return this.chatHistory.get(workerId) || [];
+  }
+
+  isManaged(workerId: string): boolean {
+    return this.workers.has(workerId);
+  }
+
+  private handleStreamEvent(workerId: string, event: StreamEvent): void {
+    const state = this.telemetry.get(workerId);
+    if (!state) return;
+
+    const now = Date.now();
+    state.lastActionAt = now;
+
+    switch (event.type) {
+      case "assistant":
+        state.status = "working";
+        state.stuckMessage = undefined;
+        this.telemetry.setIdleConfirmed(workerId, false);
+
+        if (event.subtype === "tool_use") {
+          const action = describeAction(
+            event.tool_name as string,
+            event.tool_input as Record<string, unknown>,
+          );
+          state.currentAction = action;
+          state.lastAction = action;
+          this.telemetry.notifyExternal(state);
+          this.emitChatEntry(workerId, { role: "tool", text: action, timestamp: now });
+        } else if (event.subtype === "text" && event.content) {
+          state.currentAction = "Responding...";
+          this.telemetry.notifyExternal(state);
+          this.emitChatEntry(workerId, { role: "agent", text: String(event.content), timestamp: now });
+        }
+        break;
+
+      case "tool_result":
+        state.status = "working";
+        state.lastActionAt = now;
+        this.telemetry.notifyExternal(state);
+        break;
+
+      case "result":
+        state.status = "idle";
+        state.currentAction = null;
+        state.lastAction = "Turn complete";
+        this.telemetry.setIdleConfirmed(workerId, true);
+        this.telemetry.notifyExternal(state);
+        break;
+
+      case "system":
+        // Capture session_id for hook routing
+        if (event.session_id) {
+          this.telemetry.registerSession(event.session_id, workerId);
+        }
+        break;
+    }
+  }
+
+  private emitChatEntry(workerId: string, entry: ChatEntry): void {
+    // Store in history
+    if (!this.chatHistory.has(workerId)) {
+      this.chatHistory.set(workerId, []);
+    }
+    const history = this.chatHistory.get(workerId)!;
+    history.push(entry);
+    while (history.length > MAX_CHAT_HISTORY) {
+      history.shift();
+    }
+
+    // Emit to handler
+    if (this.chatEntryHandler) {
+      this.chatEntryHandler(workerId, [entry]);
+    }
   }
 
   private injectHooks(

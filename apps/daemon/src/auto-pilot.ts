@@ -59,14 +59,19 @@ export class AutoPilot {
       // Grace period expired. Determine what to send.
       const response = this.chooseResponse(worker.currentAction, worker.stuckMessage);
 
-      // AskUserQuestion/EnterPlanMode use ink's selection UI which ignores
-      // `do script` text injection. Send arrow keys + Enter via System Events.
-      const isSelectionPrompt = (worker.currentAction || "").includes("question") ||
-        (worker.currentAction || "").includes("Asking") ||
-        (worker.currentAction || "").includes("EnterPlanMode");
-      const result = isSelectionPrompt
-        ? sendSelectionToTty(worker.tty, parseInt(response.text, 10) - 1 || 0)
-        : sendInputToTty(worker.tty, response.text);
+      // Managed workers: always send via stdin (text response works for stream-json).
+      // Discovered workers: ink selection prompts need arrow keys + Enter via System Events.
+      let result: { ok: boolean; error?: string };
+      if (worker.managed) {
+        result = this.telemetry.sendToWorker(worker.id, response.text);
+      } else {
+        const isSelectionPrompt = (worker.currentAction || "").includes("question") ||
+          (worker.currentAction || "").includes("Asking") ||
+          (worker.currentAction || "").includes("EnterPlanMode");
+        result = isSelectionPrompt
+          ? sendSelectionToTty(worker.tty!, parseInt(response.text, 10) - 1 || 0)
+          : sendInputToTty(worker.tty!, response.text);
+      }
       if (result.ok) {
         this.responded.add(stuckKey);
         this.firstSeen.delete(stuckKey);
@@ -77,11 +82,10 @@ export class AutoPilot {
         worker.lastAction = `Auto: ${response.reason}`;
         worker.lastActionAt = now;
         worker.stuckMessage = undefined;
-        // Mark external input so discovery doesn't flip to idle before JSONL catches up
         this.telemetry.markInputSent(worker.id, "auto-pilot:stuck");
         this.telemetry.notifyExternal(worker);
 
-        console.log(`[auto-pilot] ${worker.tty}: sent "${response.text}" — ${response.reason} (waited ${Math.round(waitedMs / 1000)}s)`);
+        console.log(`[auto-pilot] ${worker.id}: sent "${response.text}" — ${response.reason} (waited ${Math.round(waitedMs / 1000)}s)`);
       }
     }
 
@@ -193,11 +197,16 @@ export class AutoPilot {
       const waitedMs = now - this.firstSeen.get(prompt.toolUseId)!;
       if (waitedMs < GRACE_PERIOD_MS) continue;
 
-      // Selection prompts (AskUserQuestion, EnterPlanMode, ExitPlanMode) use
-      // ink's selection UI → need System Events keystrokes, not text injection.
-      const result = prompt.isSelection
-        ? sendSelectionToTty(worker.tty, parseInt(prompt.response, 10) - 1 || 0)
-        : sendInputToTty(worker.tty, prompt.response);
+      // Managed workers: stdin text. Discovered workers: selection prompts need
+      // System Events keystrokes, text prompts use do script.
+      let result: { ok: boolean; error?: string };
+      if (worker.managed) {
+        result = this.telemetry.sendToWorker(worker.id, prompt.response);
+      } else {
+        result = prompt.isSelection
+          ? sendSelectionToTty(worker.tty!, parseInt(prompt.response, 10) - 1 || 0)
+          : sendInputToTty(worker.tty!, prompt.response);
+      }
       if (result.ok) {
         this.responded.add(prompt.toolUseId);
         this.firstSeen.delete(prompt.toolUseId);
@@ -211,7 +220,7 @@ export class AutoPilot {
         this.telemetry.markInputSent(worker.id, "auto-pilot:jsonl");
         this.telemetry.notifyExternal(worker);
 
-        console.log(`[auto-pilot] ${worker.tty}: sent "${prompt.response}" via ${prompt.isSelection ? "selection" : "text"} — ${prompt.reason} (JSONL, waited ${Math.round(waitedMs / 1000)}s)`);
+        console.log(`[auto-pilot] ${worker.id}: sent "${prompt.response}" via ${worker.managed ? "stdin" : prompt.isSelection ? "selection" : "text"} — ${prompt.reason} (JSONL, waited ${Math.round(waitedMs / 1000)}s)`);
       }
     }
   }

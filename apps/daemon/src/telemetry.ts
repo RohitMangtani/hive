@@ -62,6 +62,9 @@ export class TelemetryReceiver {
 
   private token: string;
 
+  // Set after construction to avoid circular dependency
+  private procMgr: ProcessManager | null = null;
+
   constructor(port: number, token: string) {
     this.port = port;
     this.token = token;
@@ -121,6 +124,28 @@ export class TelemetryReceiver {
       throw new Error("registerApi() called before start()");
     }
     registerApiRoutes(this.app, this.requireAuth, this, procMgr, discovery);
+  }
+
+  /** Set ProcessManager reference for managed worker routing. */
+  registerProcessManager(procMgr: ProcessManager): void {
+    this.procMgr = procMgr;
+  }
+
+  /**
+   * Send a message to a worker via the best available channel:
+   * managed workers → stdin pipe, discovered workers → TTY AppleScript.
+   */
+  sendToWorker(workerId: string, text: string): { ok: boolean; error?: string } {
+    // Try managed (stdin pipe) first — fast, reliable, no TTY needed
+    if (this.procMgr && this.procMgr.sendMessage(workerId, text)) {
+      return { ok: true };
+    }
+    // Fall back to TTY for discovered workers
+    const worker = this.workers.get(workerId);
+    if (worker?.tty) {
+      return sendInputToTty(worker.tty, text);
+    }
+    return { ok: false, error: `Worker ${workerId} not reachable` };
   }
 
   // --- Session management ---
@@ -428,16 +453,17 @@ export class TelemetryReceiver {
     for (const [workerId, queue] of this.messageQueue) {
       if (queue.length === 0) continue;
       const worker = this.get(workerId);
-      if (!worker?.tty || worker.status !== "idle") continue;
+      if (!worker || worker.status !== "idle") continue;
+      if (!worker.tty && !worker.managed) continue; // need either TTY or managed stdin
       if (Date.now() - worker.lastActionAt < 15_000) continue;
 
       const msg = queue.shift()!;
       if (Date.now() - msg.queuedAt > 30 * 60 * 1000) {
-        console.log(`[queue] ${worker.tty}: dropped stale message (queued ${Math.round((Date.now() - msg.queuedAt) / 60000)}m ago)`);
+        console.log(`[queue] ${worker.id}: dropped stale message (queued ${Math.round((Date.now() - msg.queuedAt) / 60000)}m ago)`);
         continue;
       }
 
-      const result = sendInputToTty(worker.tty, msg.content);
+      const result = this.sendToWorker(workerId, msg.content);
       if (result.ok) {
         worker.status = "working";
         worker.currentAction = "Thinking...";
@@ -448,7 +474,7 @@ export class TelemetryReceiver {
         this.markInputSent(workerId, msg.source);
         this.trackDispatch(workerId, msg.content.slice(0, 200));
         this.notifyExternal(worker);
-        console.log(`[queue] ${worker.tty}: drained queued message (${queue.length} remaining)`);
+        console.log(`[queue] ${worker.id}: drained queued message (${queue.length} remaining)`);
       }
       break;
     }
@@ -550,12 +576,12 @@ export class TelemetryReceiver {
 
       let target = idleWorkers.find(w => task.project && w.project.includes(task.project));
       if (!target) target = idleWorkers[0];
-      if (!target?.tty) continue;
+      if (!target || (!target.tty && !target.managed)) continue;
 
       const brief = this.buildContextBrief(target.id, task.project);
       const fullTask = task.task + brief;
 
-      const result = sendInputToTty(target.tty, fullTask);
+      const result = this.sendToWorker(target.id, fullTask);
       if (result.ok) {
         target.status = "working";
         target.currentAction = "Thinking...";
@@ -568,7 +594,7 @@ export class TelemetryReceiver {
 
         this.taskQueue.remove(task.id);
         this.taskQueue.markCompleted(task.id);
-        console.log(`[task-queue] Dispatched ${task.id} to ${target.tty} (${this.taskQueue.length} remaining)`);
+        console.log(`[task-queue] Dispatched ${task.id} to ${target.id} (${this.taskQueue.length} remaining)`);
 
         // One task per worker per tick
         const targetIdx = idleWorkers.indexOf(target);
