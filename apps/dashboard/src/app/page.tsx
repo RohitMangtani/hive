@@ -439,7 +439,7 @@ function ChatPanel({
                 onFocus={() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }}
                 placeholder="Message agent..."
                 rows={1}
-                className="chat-input flex-1 min-w-0 !h-[44px] !max-h-[44px] !overflow-y-auto"
+                className="chat-input flex-1 min-w-0 !h-[56px] !max-h-[56px] !overflow-y-auto"
               />
               <button
                 type="button"
