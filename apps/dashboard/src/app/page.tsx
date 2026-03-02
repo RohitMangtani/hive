@@ -265,18 +265,16 @@ function ChatPanel({
         <div
           className="relative flex items-center justify-between px-4 pt-4 pb-3 border-b border-[var(--border)] shrink-0 cursor-grab active:cursor-grabbing"
           onTouchStart={(e) => { touchStartY.current = e.touches[0].clientY; }}
-          onTouchEnd={(e) => {
+          onTouchMove={(e) => {
             if (touchStartY.current === null) return;
-            const dy = e.changedTouches[0].clientY - touchStartY.current;
-            touchStartY.current = null;
-            if (dy > 40) textareaRef.current?.blur();
+            const dy = e.touches[0].clientY - touchStartY.current;
+            if (dy > 30) { touchStartY.current = null; textareaRef.current?.blur(); }
           }}
           onMouseDown={(e) => { touchStartY.current = e.clientY; }}
-          onMouseUp={(e) => {
-            if (touchStartY.current === null) return;
+          onMouseMove={(e) => {
+            if (touchStartY.current === null || !(e.buttons & 1)) return;
             const dy = e.clientY - touchStartY.current;
-            touchStartY.current = null;
-            if (dy > 40) textareaRef.current?.blur();
+            if (dy > 30) { touchStartY.current = null; textareaRef.current?.blur(); }
           }}
         >
           {/* Swipe handle */}
