@@ -45,6 +45,13 @@ export class WsServer {
       });
     });
 
+    this.telemetry.onRemoval(() => {
+      this.broadcast({
+        type: "workers",
+        workers: this.telemetry.getAll(),
+      });
+    });
+
     this.procMgr.setOutputHandler((workerId, data) => {
       this.broadcast({
         type: "chat",
@@ -228,20 +235,16 @@ export class WsServer {
             managed.stuckMessage = undefined;
             this.telemetry.notifyExternal(managed);
           }
+          // Rapid-poll the session file so the response shows up fast
+          this.streamer.nudge(msg.workerId);
           break;
         }
 
         // For discovered workers: type into Terminal.app via AppleScript
         const worker = this.telemetry.get(msg.workerId);
         if (worker?.tty) {
-          // Queue if worker is busy — don't inject into active conversation
-          if (worker.status === "working" || worker.status === "stuck") {
-            this.telemetry.enqueueMessage(msg.workerId, msg.content, "dashboard");
-            const queue = (this.telemetry as any).messageQueue?.get(msg.workerId) || [];
-            this.send(ws, { type: "queued", workerId: msg.workerId, position: queue.length });
-            console.log(`[queue] ${worker.tty}: queued dashboard message (worker ${worker.status})`);
-            break;
-          }
+          // Dashboard messages always send immediately — the user is intentionally
+          // typing into the terminal regardless of agent status.
           const result = sendInputToTty(worker.tty, msg.content);
           if (result.ok) {
             worker.status = "working";
@@ -252,6 +255,8 @@ export class WsServer {
             this.telemetry.markDashboardInput(msg.workerId);
             this.telemetry.markInputSent(msg.workerId, "dashboard");
             this.telemetry.notifyExternal(worker);
+            // Rapid-poll the session file so the response shows up fast
+            this.streamer.nudge(msg.workerId);
             console.log(`Typed into ${worker.tty}: ${msg.content.slice(0, 50)}`);
           } else {
             this.send(ws, {

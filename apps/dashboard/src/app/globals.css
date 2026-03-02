@@ -112,11 +112,39 @@
     -webkit-overflow-scrolling: touch;
   }
 
-  /* Send button — satisfying press */
+  /* Chat scroll nav buttons */
+  .chat-nav-btn {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-light);
+    font-size: 10px;
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.15s ease, background 0.15s ease;
+  }
+
+  .chat-nav-btn:hover {
+    opacity: 1;
+    background: var(--bg-panel);
+    color: var(--text);
+  }
+
+  .chat-nav-btn:active {
+    transform: scale(0.9);
+  }
+
+  /* Send button — fixed height to match input */
   .send-btn {
     border-radius: 10px;
     font-size: 14px;
     font-weight: 600;
+    height: 44px;
     padding: 0 20px;
     background: var(--accent);
     color: white;
@@ -140,7 +168,7 @@
     transform: none;
   }
 
-  /* Textarea — cleaner focus */
+  /* Textarea — fixed height, no auto-resize */
   .chat-input {
     background: var(--bg-panel);
     border: 1.5px solid var(--border);
@@ -151,7 +179,6 @@
     color: var(--text);
     outline: none;
     resize: none;
-    overflow: hidden;
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
   }
 

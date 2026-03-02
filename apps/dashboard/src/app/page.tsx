@@ -205,11 +205,12 @@ function AgentCard({
 // --- Chat Panel ---
 
 function ChatPanel({
-  worker, num, entries, draft, onDraftChange, onSend, onClose, onDismiss,
+  worker, num, entries, draft, onDraftChange, onSend, onClose, onDismiss, expanded, onExpand,
 }: {
   worker: WorkerState; num: number; entries: ChatEntry[];
   draft: string; onDraftChange: (v: string) => void;
   onSend: (msg: string) => boolean; onClose: () => void; onDismiss: () => void;
+  expanded: boolean; onExpand: (v: boolean) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -219,31 +220,18 @@ function ChatPanel({
   const stuck = worker.status === "stuck";
   const buttons = stuck ? quickButtons(worker) : [];
 
-  // Scroll chat messages to bottom on new messages
+  // Scroll chat to absolute bottom on any entries change (new messages, initial load, etc.)
+  // Double-rAF ensures DOM layout is fully settled before measuring scrollHeight
   useEffect(() => {
     const el = scrollRef.current;
     if (el) {
-      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+      });
     }
-  }, [entries.length]);
+  }, [entries]);
 
-  // On mount: snap chat messages to bottom
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
-  }, []);
-
-  // Auto-resize textarea to fit content
-  const autoResize = useCallback(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    const maxH = window.innerHeight * 0.3; // 30vh max
-    ta.style.height = `${Math.min(ta.scrollHeight, maxH)}px`;
-    ta.style.overflowY = ta.scrollHeight > maxH ? "auto" : "hidden";
-  }, []);
-
-  useEffect(() => { autoResize(); }, [draft, autoResize]);
+  // No auto-resize — fixed height input bar like iMessage
 
   // Refocus textarea when returning to the app (visibility change)
   useEffect(() => {
@@ -259,7 +247,7 @@ function ChatPanel({
 
   return (
       <div className="chat-panel flex-1 min-h-0 flex flex-col border-t border-[var(--border)] bg-[var(--bg-card)]">
-        {/* Header — swipe down to dismiss (keeps draft), X to close (clears draft) */}
+        {/* Header — swipe up = expand (top lock), swipe down = collapse/dismiss */}
         <div
           className="relative flex items-center justify-between px-4 pt-5 pb-4 border-b border-[var(--border)] shrink-0 cursor-grab active:cursor-grabbing touch-none"
           onTouchStart={(e) => { touchStartY.current = e.touches[0].clientY; }}
@@ -268,8 +256,12 @@ function ChatPanel({
             const dy = e.touches[0].clientY - touchStartY.current;
             if (dy > 20) {
               touchStartY.current = null;
-              if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
+              if (expanded) { onExpand(false); textareaRef.current?.blur(); }
+              else if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
               else onDismiss();
+            } else if (dy < -12) {
+              touchStartY.current = null;
+              if (!expanded) { onExpand(true); setTimeout(() => textareaRef.current?.focus(), 350); }
             }
           }}
           onTouchEnd={(e) => {
@@ -277,8 +269,11 @@ function ChatPanel({
             const dy = e.changedTouches[0].clientY - touchStartY.current;
             touchStartY.current = null;
             if (dy > 20) {
-              if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
+              if (expanded) { onExpand(false); textareaRef.current?.blur(); }
+              else if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
               else onDismiss();
+            } else if (dy < -12) {
+              if (!expanded) { onExpand(true); setTimeout(() => textareaRef.current?.focus(), 350); }
             }
           }}
           onMouseDown={(e) => { touchStartY.current = e.clientY; }}
@@ -287,8 +282,11 @@ function ChatPanel({
             const dy = e.clientY - touchStartY.current;
             touchStartY.current = null;
             if (dy > 20) {
-              if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
+              if (expanded) { onExpand(false); textareaRef.current?.blur(); }
+              else if (document.activeElement === textareaRef.current) textareaRef.current?.blur();
               else onDismiss();
+            } else if (dy < -12) {
+              if (!expanded) { onExpand(true); setTimeout(() => textareaRef.current?.focus(), 350); }
             }
           }}
         >
@@ -308,6 +306,21 @@ function ChatPanel({
 
         {/* Messages */}
         <div className="relative flex-1 min-h-0">
+        {/* Scroll nav buttons */}
+        <div className="absolute right-2 bottom-2 z-10 flex flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => { if (scrollRef.current) scrollRef.current.scrollTo({ top: 0, behavior: "smooth" }); }}
+            className="chat-nav-btn"
+            aria-label="Scroll to top"
+          >&#9650;</button>
+          <button
+            type="button"
+            onClick={() => { if (scrollRef.current) scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }}
+            className="chat-nav-btn"
+            aria-label="Scroll to bottom"
+          >&#9660;</button>
+        </div>
         <div
           ref={scrollRef}
           className="chat-scroll absolute inset-0 overflow-y-auto p-4 space-y-3 overscroll-contain"
@@ -385,7 +398,7 @@ function ChatPanel({
 
         {/* Input area */}
         {canSend && (
-          <div className="border-t border-[var(--border)] p-3 shrink-0">
+          <div className="border-t border-[var(--border)] px-3 py-2 shrink-0">
             {stuck && buttons.length > 0 && (
               <div className="flex items-center gap-1.5 mb-2 flex-wrap">
                 <span className="text-[10px] text-[#fbbf24] shrink-0">{worker.currentAction}:</span>
@@ -396,7 +409,7 @@ function ChatPanel({
                 ))}
               </div>
             )}
-            <div className="flex gap-2 items-stretch">
+            <div className="flex gap-2 items-end">
               <textarea
                 ref={textareaRef}
                 value={draft}
@@ -409,8 +422,8 @@ function ChatPanel({
                 }}
                 onFocus={() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }}
                 placeholder="Message agent..."
-                rows={3}
-                className="chat-input flex-1 min-w-0"
+                rows={1}
+                className="chat-input flex-1 min-w-0 !h-[44px] !max-h-[44px] !overflow-y-auto"
               />
               <button
                 type="button"
@@ -436,6 +449,7 @@ export default function Home() {
   const [showUnlock, setShowUnlock] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
   const [showSpawn, setShowSpawn] = useState(false);
+  const [chatExpanded, setChatExpanded] = useState(false);
   // Per-agent draft text — persists in localStorage (survives browser close/refresh).
   // Only cleared when user presses X to close the chat popover.
   const draftsRef = useRef<Map<string, string>>(new Map());
@@ -591,7 +605,10 @@ export default function Home() {
       </header>
 
       {/* Body — 2×2 grid, shrinks when chat is open */}
-      <div className={`min-h-0 grid grid-cols-2 grid-rows-2 gap-3 p-4 sm:p-6 transition-all duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] ${!isViewer && selectedEntry ? "shrink-0 basis-[40%]" : "flex-1"}`}>
+      <div
+        className={`min-h-0 grid grid-cols-2 grid-rows-2 gap-3 p-4 sm:p-6 transition-all duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] ${!isViewer && selectedEntry ? "shrink-0" : "flex-1"}`}
+        style={!isViewer && selectedEntry ? { flexBasis: chatExpanded ? "0px" : "40%", maxHeight: chatExpanded ? "0px" : "none", overflow: chatExpanded ? "hidden" : "visible", padding: chatExpanded ? "0px" : undefined, gap: chatExpanded ? "0px" : undefined } : undefined}
+      >
         {Array.from({ length: MAX_SLOTS }, (_, i) => i + 1).map((slot) => {
           const entry = numbered.find(({ num }) => num === slot);
           if (!entry) {
@@ -637,6 +654,8 @@ export default function Home() {
           num={selectedEntry.num}
           entries={(chatEntries.get(selectedEntry.worker.id) ?? []).slice(-50)}
           draft={draftsRef.current.get(selectedEntry.worker.id) || ""}
+          expanded={chatExpanded}
+          onExpand={setChatExpanded}
           onDraftChange={(v) => {
             draftsRef.current.set(selectedEntry.worker.id, v);
             setDraftTick((k) => k + 1);
@@ -654,11 +673,13 @@ export default function Home() {
           }}
           onDismiss={() => {
             // Swipe down: close panel but keep draft for next time
+            setChatExpanded(false);
             setSelectedId(null);
             subscribeTo(null);
           }}
           onClose={() => {
             // X button: clear draft and close — only action that removes draft
+            setChatExpanded(false);
             draftsRef.current.delete(selectedEntry.worker.id);
             try {
               const obj = Object.fromEntries(draftsRef.current);

@@ -3,14 +3,17 @@ import { basename, join } from "path";
 import type { ChatEntry } from "./types.js";
 
 const MAX_HISTORY = 50;
-const POLL_INTERVAL = 1_000; // fallback poll if fs.watch misses events
+const POLL_INTERVAL = 500; // fallback poll if fs.watch misses events
+const NUDGE_INTERVALS = [200, 500, 1_000, 2_000, 4_000]; // rapid polls after message send
 
 interface Subscription {
+  workerId: string;
   filePath: string;
   byteOffset: number;
   timer: ReturnType<typeof setInterval>;
   watcher: FSWatcher | null;
   callback: (entries: ChatEntry[]) => void;
+  nudgeTimers: ReturnType<typeof setTimeout>[];
 }
 
 export class SessionStreamer {
@@ -113,11 +116,13 @@ export class SessionStreamer {
     }
 
     const sub: Subscription = {
+      workerId,
       filePath,
       byteOffset,
       callback,
       watcher,
       timer: setInterval(() => this.poll(subKey), POLL_INTERVAL),
+      nudgeTimers: [],
     };
 
     this.subscriptions.set(subKey, sub);
@@ -127,14 +132,44 @@ export class SessionStreamer {
     const sub = this.subscriptions.get(workerId);
     if (sub) {
       clearInterval(sub.timer);
+      for (const t of sub.nudgeTimers) clearTimeout(t);
       if (sub.watcher) sub.watcher.close();
       this.subscriptions.delete(workerId);
     }
   }
 
-  private poll(workerId: string): void {
-    const sub = this.subscriptions.get(workerId);
+  /**
+   * Trigger rapid polling for a worker after a message was sent to it.
+   * Schedules multiple polls at increasing intervals so the agent's response
+   * appears on the dashboard within ~200ms of being written to the JSONL.
+   */
+  nudge(workerId: string): void {
+    for (const [subKey, sub] of this.subscriptions) {
+      if (sub.workerId !== workerId) continue;
+      // Clear any existing nudge timers to avoid stacking
+      for (const t of sub.nudgeTimers) clearTimeout(t);
+      sub.nudgeTimers = NUDGE_INTERVALS.map((ms) =>
+        setTimeout(() => this.poll(subKey), ms)
+      );
+    }
+  }
+
+  private poll(subKey: string): void {
+    const sub = this.subscriptions.get(subKey);
     if (!sub) return;
+
+    // Detect session file change (context compaction creates a new JSONL).
+    // Discovery updates sessionFiles on every scan — if the file changed,
+    // switch to the new one and send its full history as new entries.
+    const currentFile = this.sessionFiles.get(sub.workerId);
+    if (currentFile && currentFile !== sub.filePath) {
+      if (sub.watcher) sub.watcher.close();
+      sub.filePath = currentFile;
+      sub.byteOffset = 0; // Read from start of new file
+      try {
+        sub.watcher = watch(currentFile, () => this.poll(subKey));
+      } catch { sub.watcher = null; }
+    }
 
     try {
       const stat = statSync(sub.filePath);
@@ -142,7 +177,8 @@ export class SessionStreamer {
 
       const buf = readFileSync(sub.filePath);
       const newContent = buf.subarray(sub.byteOffset).toString("utf-8");
-      sub.byteOffset = stat.size;
+      // Use buf.length (actual bytes read) not stat.size — file may have grown between stat and read
+      sub.byteOffset = buf.length;
 
       const entries: ChatEntry[] = [];
       for (const line of newContent.split("\n").filter(Boolean)) {
