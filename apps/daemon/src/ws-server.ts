@@ -59,15 +59,6 @@ export class WsServer {
         content: data,
       });
     });
-
-    // Structured chat entries from managed workers (parsed from stdout stream events)
-    this.procMgr.setChatEntryHandler((workerId, entries) => {
-      for (const [ws, subWorkerId] of this.clientSubs) {
-        if (subWorkerId === workerId && ws.readyState === WebSocket.OPEN) {
-          this.send(ws, { type: "chat_history", workerId, messages: entries });
-        }
-      }
-    });
   }
 
   start(): void {
@@ -153,9 +144,8 @@ export class WsServer {
         const workerId = msg.workerId;
         this.clientSubs.set(ws, workerId);
 
-        // Send chat history — managed workers use in-memory store, discovered use JSONL
-        const managedHistory = this.procMgr.getChatHistory(workerId);
-        const history = managedHistory.length > 0 ? managedHistory : this.streamer.readHistory(workerId);
+        // Send chat history
+        const history = this.streamer.readHistory(workerId);
         if (history.length > 0) {
           this.send(ws, { type: "chat_history", workerId, messages: history });
         }
@@ -232,10 +222,10 @@ export class WsServer {
           return;
         }
 
-        // For managed workers: send via process stdin (reliable pipe, no AppleScript)
+        // For managed workers: send via process stdin
         const sent = this.procMgr.sendMessage(msg.workerId, msg.content);
         if (sent) {
-          // Instant green — stdin delivery is deterministic
+          // Instant green for managed workers too
           const managed = this.telemetry.get(msg.workerId);
           if (managed) {
             managed.status = "working";
@@ -243,10 +233,10 @@ export class WsServer {
             managed.lastAction = "Received message";
             managed.lastActionAt = Date.now();
             managed.stuckMessage = undefined;
-            this.telemetry.markInputSent(msg.workerId, "dashboard:managed");
             this.telemetry.notifyExternal(managed);
           }
-          console.log(`Piped to ${msg.workerId}: ${msg.content.slice(0, 50)}`);
+          // Rapid-poll the session file so the response shows up fast
+          this.streamer.nudge(msg.workerId);
           break;
         }
 

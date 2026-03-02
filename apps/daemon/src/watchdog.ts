@@ -132,7 +132,7 @@ export class Watchdog {
         w => w.status === "idle" && w.tty && w.project.includes("hive") && w.tty !== anomalyTty
       );
 
-      if (!idle || (!idle.tty && !idle.managed)) {
+      if (!idle?.tty) {
         if (tracked.attempts === 0) {
           console.log(`[watchdog] Anomaly ${anomaly.type}: no idle hive agent to dispatch to`);
         }
@@ -142,7 +142,7 @@ export class Watchdog {
       const learnings = this.readLearnings();
       const task = this.buildTask(anomaly, tracked.attempts, learnings);
 
-      const result = this.telemetry.sendToWorker(idle.id, task);
+      const result = sendInputToTty(idle.tty, task);
       if (result.ok) {
         tracked.attempts++;
         tracked.lastDispatched = now;
@@ -156,7 +156,7 @@ export class Watchdog {
         this.telemetry.markInputSent(idle.id, "watchdog");
         this.telemetry.trackDispatch(idle.id, `Watchdog: ${anomaly.type} — ${anomaly.description.slice(0, 150)}`);
         this.telemetry.notifyExternal(idle);
-        console.log(`[watchdog] Dispatched ${anomaly.type} to ${idle.id} (attempt ${tracked.attempts}/${MAX_ATTEMPTS})`);
+        console.log(`[watchdog] Dispatched ${anomaly.type} to ${idle.tty} (attempt ${tracked.attempts}/${MAX_ATTEMPTS})`);
       }
     }
 

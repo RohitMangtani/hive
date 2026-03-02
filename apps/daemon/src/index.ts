@@ -20,7 +20,6 @@ const autoPilot = new AutoPilot(telemetry, streamer);
 const watchdog = new Watchdog(telemetry);
 
 telemetry.start();
-telemetry.registerProcessManager(procMgr);
 telemetry.registerApi(procMgr, discovery);
 ws.start();
 

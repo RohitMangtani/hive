@@ -37,7 +37,6 @@ export function registerApiRoutes(
         managed.lastAction = "Received message";
         managed.lastActionAt = Date.now();
         managed.stuckMessage = undefined;
-        receiver.markInputSent(workerId, "api:message:managed");
         receiver.notifyExternal(managed);
       }
       receiver.trackDispatch(workerId, content.slice(0, 200));
