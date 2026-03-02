@@ -1,123 +1,97 @@
 # Hive
 
-An operating system for directing AI labor. Daemon, dashboard, and coordination layer for running multiple Claude Code agents simultaneously on one machine.
+Run 4 Claude Code agents at once. Coordinate them from your phone.
 
-## The Problem
+Hive is a local daemon that auto-discovers running Claude Code instances, tracks whether each one is working or idle, and gives you a live dashboard to monitor and message all of them. You open 4 terminals, run `claude` in each, and the daemon handles the rest — auto-approving prompts, preventing file conflicts, and compounding learnings across agents and sessions.
 
-AI labs are building smarter individual agents. Nobody is building infrastructure for managing fleets of them. One agent is a tool. Four agents editing the same codebase without coordination is chaos — duplicate work, file conflicts, idle time from unattended permission prompts.
+## Prerequisites
 
-This is the pre-Kubernetes moment for AI agents. Docker solved the single container. Someone has to solve orchestration.
+- **macOS** (uses AppleScript + CGEvent for terminal interaction)
+- **Node.js 20+** — [nodejs.org](https://nodejs.org)
+- **Claude Code** — `npm install -g @anthropic-ai/claude-code`
 
-## What Hive Does
+## Setup
 
-Hive is a local daemon that auto-discovers running Claude Code instances, tracks their status in real-time, and provides coordination primitives so multiple agents can work the same machine without stepping on each other.
+```bash
+git clone https://github.com/RohitMangtani/hive.git
+cd hive
+bash setup.sh
+```
 
-**Auto-discovery** — Detects running Claude processes within 3 seconds. Zero configuration.
+That's it. The script installs dependencies, compiles the auto-pilot binary, and wires up Claude Code hooks.
 
-**Status detection** — Three-layer pipeline reads session telemetry, JSONL logs, and process signals to determine whether each agent is working (green), idle (red), or stuck waiting for input (yellow).
+## Running
 
-**Auto-pilot** — Monitors for permission prompts and auto-approves routine operations within a grace window. Prevents agents from sitting idle waiting for a human to press Enter.
+You need 3 things running:
 
-**Coordination** — Five primitives for multi-agent safety:
-- Inter-agent messaging
-- Advisory file locks
-- Shared scratchpad (ephemeral, auto-expiring)
-- Artifact tracking (which agent modified which files)
-- Conflict detection (warns before editing a file another agent recently touched)
+**1. Daemon** (coordinates everything)
+```bash
+npm run dev:daemon
+```
 
-**Compound learning** — Persistent project-level knowledge files that accumulate across agents and sessions. Solved a tricky build issue? The next agent in that project reads the solution automatically.
+**2. Dashboard** (in a new terminal)
+```bash
+npm run dev:dashboard
+```
+
+**3. Agents** (open 4 Terminal.app tabs, run `claude` in each)
+
+The daemon auto-discovers agents within 3 seconds. The dashboard shows their status at `localhost:3000`.
+
+## The Quadrant Setup
+
+Arrange your 4 terminal tabs in a 2x2 grid:
+
+```
+┌───────────┬───────────┐
+│  Agent 1  │  Agent 2  │
+│  (Q1)     │  (Q2)     │
+├───────────┼───────────┤
+│  Agent 3  │  Agent 4  │
+│  (Q3)     │  (Q4)     │
+└───────────┴───────────┘
+```
+
+Each agent gets a quadrant number based on when it started (earliest = Q1). The dashboard mirrors this layout.
+
+**Second screen as a stoplight:** Put the dashboard on a phone, tablet, or second monitor. Each agent card is a stoplight — green means working, red means idle, yellow means stuck waiting for input. You manage a fleet of AI workers by glancing at colors and tapping messages.
+
+## What It Does
+
+**Auto-discovery** — Detects Claude processes within 3 seconds. No configuration.
+
+**Status tracking** — Three-layer detection pipeline (hooks, JSONL analysis, CPU signal) determines real-time status. Green = working. Red = done. Yellow = needs input.
+
+**Auto-pilot** — Auto-approves permission prompts so agents never sit idle. 3-second grace window lets you override from the dashboard.
+
+**Coordination** — File locks, conflict detection, shared scratchpad, inter-agent messaging, and a global task queue. Multiple agents can safely work the same codebase.
+
+**Compound learning** — Every solved problem gets written to a per-project knowledge file. The next agent that works on that project reads it automatically. The system gets smarter with every session.
+
+## How This Helps
+
+This was built using the agents it manages. Four Claude Code instances iterated on the daemon and dashboard simultaneously while a human directed architecture and resolved conflicts.
+
+- [Project page](https://www.rohitmangtani.com/lab/hive) — Full writeup on why this matters
+- [The Reference Point](https://www.rohitmangtani.com/lab/the-reference-point) — How it fits into a broader portfolio of AI infrastructure work
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│  Daemon (Node.js, launchd-managed)          │
-│                                             │
-│  ┌──────────┐  ┌───────────┐  ┌──────────┐ │
-│  │ Discovery │  │ Telemetry │  │ AutoPilot│ │
-│  └──────────┘  └───────────┘  └──────────┘ │
-│  ┌──────────┐  ┌───────────┐  ┌──────────┐ │
-│  │ ProcessMgr│  │ Watchdog  │  │ TTY Input│ │
-│  └──────────┘  └───────────┘  └──────────┘ │
-│                                             │
-│  REST API (:3001)  ·  WebSocket (:3002)     │
-└─────────────────────────────────────────────┘
-         │                    │
-    ┌────┴────┐          ┌───┴────┐
-    │ Dashboard│          │ Agents │
-    │ (Next.js)│          │ (1–N)  │
-    └─────────┘          └────────┘
+Daemon (Node.js, port 3001 + 3002)
+├── Auto-discovery — finds Claude processes via ps + lsof
+├── Telemetry — receives hook events, maintains worker state
+├── Auto-pilot — detects stuck prompts, auto-approves
+├── Task queue — global work queue, auto-dispatches to idle agents
+├── Coordination — locks, scratchpad, conflict detection, learnings
+└── WebSocket — pushes live state to dashboard
+
+Dashboard (Next.js, port 3000)
+├── 2x2 agent grid — stoplight status cards
+├── Live chat — stream each agent's conversation
+└── Controls — send messages, spawn agents, view learnings
 ```
 
-**Daemon** — TypeScript process running via macOS `launchd` with `KeepAlive`. Scans every 3 seconds. Exposes REST endpoints for task queues, locks, messaging, and learnings. WebSocket server pushes live state to the dashboard.
+## License
 
-**Dashboard** — Next.js app showing agent status, live chat streams, and controls for spawning/killing agents. Accessible locally or via tunnel.
-
-## Tech Stack
-
-| Component | Stack |
-|-----------|-------|
-| Daemon | TypeScript, Express, WebSocket (`ws`) |
-| Dashboard | Next.js 16, React 19, Tailwind CSS 4 |
-| Build | Turborepo workspaces |
-| Process management | macOS `launchd` + `caffeinate` |
-| TTY interaction | `osascript` + CGEvent binary for reliable keystroke injection |
-
-## Project Structure
-
-```
-apps/
-  daemon/          # Discovery, telemetry, coordination, auto-pilot
-    src/
-      index.ts          # Entry point — wires all subsystems, runs 3s tick loop
-      discovery.ts       # Auto-discovers Claude processes, reads session context
-      telemetry.ts       # Receives hook events, maintains worker state
-      auto-pilot.ts      # Detects stuck prompts, auto-approves
-      tty-input.ts       # Sends keystrokes to agent terminals
-      ws-server.ts       # WebSocket server + REST API endpoints
-      process-mgr.ts     # Spawn/kill managed agent processes
-      session-stream.ts  # Reads JSONL session logs for chat history
-      watchdog.ts        # Monitors daemon health
-      auth.ts            # Token generation and hook URL patching
-  dashboard/       # Real-time monitoring UI
-    src/
-      app/page.tsx       # Main dashboard layout
-      components/        # WorkerCard, SpawnDialog, chat panels
-      lib/               # WebSocket client, types
-```
-
-## Getting Started
-
-**Prerequisites:** Node.js 20+, macOS (daemon uses AppleScript + CGEvent for TTY interaction)
-
-```bash
-# Clone and install
-git clone https://github.com/RohitMangtani/hive.git
-cd hive
-npm install
-
-# Copy environment template (all vars have sensible defaults)
-cp .env.example .env
-
-# Start the daemon (runs on ports 3001 + 3002)
-npm run dev:daemon
-
-# In another terminal, start the dashboard
-npm run dev:dashboard
-
-# Set up Claude Code hooks (connects agents to the daemon)
-bash setup-hooks.sh
-```
-
-The daemon auto-discovers any running Claude Code instance within 3 seconds. Open the dashboard at `http://localhost:3000` to see agent status.
-
-See `.env.example` for all available configuration options.
-
-## How It Was Built
-
-Hive was built using the agents it manages. Four Claude Code instances iterated on the daemon and dashboard simultaneously while a human directed architecture and resolved conflicts. The coordination primitives exist because the development process demanded them.
-
-## Related
-
-- [Project page](https://www.rohitmangtani.com/lab/hive) — Full writeup with architecture diagrams
-- [The Reference Point](https://www.rohitmangtani.com/lab/the-reference-point) — Context on how this fits into a broader portfolio of AI infrastructure work
+MIT
