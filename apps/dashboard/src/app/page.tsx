@@ -588,7 +588,7 @@ export default function Home() {
           key={selectedEntry.worker.id}
           worker={selectedEntry.worker}
           num={selectedEntry.num}
-          entries={chatEntries.get(selectedEntry.worker.id) ?? []}
+          entries={(chatEntries.get(selectedEntry.worker.id) ?? []).slice(-50)}
           draft={draftsRef.current.get(selectedEntry.worker.id) || ""}
           onDraftChange={(v) => {
             draftsRef.current.set(selectedEntry.worker.id, v);
