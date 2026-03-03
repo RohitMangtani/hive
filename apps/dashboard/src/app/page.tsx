@@ -245,6 +245,7 @@ export default function Home() {
               selected={!isViewer && selectedId === w.id}
               onClick={isViewer ? () => {} : () => toggleSelect(w.id)}
               onSend={isViewer ? () => {} : (msg) => send({ type: "message", workerId: w.id, content: msg })}
+              onSelect={isViewer ? undefined : (index) => send({ type: "selection", workerId: w.id, optionIndex: index })}
             />
           );
         })}

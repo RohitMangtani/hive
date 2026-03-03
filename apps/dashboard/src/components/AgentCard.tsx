@@ -37,13 +37,26 @@ function badgeStyle(color: DotColor) {
   return map[color];
 }
 
+/** Tools that use ink's selection UI (arrow keys + enter, not text input) */
+const SELECTION_TOOLS = new Set(["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"]);
+
+/** Whether this stuck state needs selection keystrokes vs text input */
+export function isSelectionStuck(w: WorkerState): boolean {
+  return SELECTION_TOOLS.has(w.currentAction || "");
+}
+
 /**
  * Parse quick-reply buttons from the worker state.
  * Priority: parse real options from stuckMessage > infer from currentAction > fallback
  */
-export function quickButtons(w: WorkerState): { label: string; value: string }[] {
+export function quickButtons(w: WorkerState): { label: string; value: string; index?: number }[] {
   const msg = w.stuckMessage || "";
   const reason = (w.currentAction || "").toLowerCase();
+
+  // Selection UIs: first option is always "approve/yes" (index 0)
+  if (isSelectionStuck(w)) {
+    return [{ label: "Approve", value: "0", index: 0 }];
+  }
 
   if (reason.includes("permission")) {
     return [{ label: "Allow", value: "y" }, { label: "Deny", value: "n" }];
@@ -71,9 +84,9 @@ export { dotColor, DOT_BG, statusLabel, statusWord, badgeStyle };
 export type { DotColor };
 
 export function AgentCard({
-  worker, num, selected, onClick, onSend,
+  worker, num, selected, onClick, onSend, onSelect,
 }: {
-  worker: WorkerState; num: number; selected: boolean; onClick: () => void; onSend: (msg: string) => void;
+  worker: WorkerState; num: number; selected: boolean; onClick: () => void; onSend: (msg: string) => void; onSelect?: (index: number) => void;
 }) {
   const color = dotColor(worker);
   const stuck = color === "yellow";
@@ -117,7 +130,14 @@ export function AgentCard({
             <button
               key={b.value}
               type="button"
-              onClick={(e) => { e.stopPropagation(); onSend(b.value); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (b.index !== undefined && onSelect) {
+                  onSelect(b.index);
+                } else {
+                  onSend(b.value);
+                }
+              }}
               className="quick-reply-btn"
             >
               {b.label}
