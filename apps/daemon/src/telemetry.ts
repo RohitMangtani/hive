@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { basename, join } from "path";
 import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "fs";
 import { describeAction, truncate } from "./utils.js";
+import type { DaemonSnapshot } from "./state-store.js";
 import type { Server } from "http";
 import { validateToken } from "./auth.js";
 import { sendInputToTty } from "./tty-input.js";
@@ -957,6 +958,66 @@ export class TelemetryReceiver {
     for (const listener of this.listeners) {
       listener(worker.id, worker);
     }
+  }
+
+  // --- State persistence ---
+
+  exportState(): DaemonSnapshot {
+    const workers = this.getAll().map(w => ({
+      id: w.id, pid: w.pid, project: w.project, projectName: w.projectName,
+      status: w.status, lastAction: w.lastAction, lastActionAt: w.lastActionAt,
+      errorCount: w.errorCount, startedAt: w.startedAt, task: w.task,
+      managed: w.managed, tty: w.tty,
+    }));
+
+    const messageQueue: Record<string, Array<{ id: string; content: string; source: string; queuedAt: number }>> = {};
+    for (const [wid, queue] of this.messageQueue) {
+      if (queue.length > 0) messageQueue[wid] = [...queue];
+    }
+
+    const dispatchedTasks: Record<string, { task: string; project: string; sentAt: number }> = {};
+    for (const [wid, dt] of this.dispatchedTasks) {
+      dispatchedTasks[wid] = { ...dt };
+    }
+
+    return {
+      savedAt: Date.now(),
+      workers,
+      messageQueue,
+      messageIdCounter: this.messageIdCounter,
+      locks: this.lockManager.getAll(),
+      dispatchedTasks,
+    };
+  }
+
+  importState(snapshot: DaemonSnapshot): void {
+    let workerCount = 0;
+    for (const w of snapshot.workers) {
+      const restored: WorkerState = {
+        id: w.id, pid: w.pid, project: w.project, projectName: w.projectName,
+        status: "idle", currentAction: null, lastAction: w.lastAction,
+        lastActionAt: w.lastActionAt, errorCount: w.errorCount,
+        startedAt: w.startedAt, task: w.task, managed: w.managed, tty: w.tty,
+      };
+      this.workers.set(w.id, restored);
+      workerCount++;
+    }
+
+    for (const [wid, queue] of Object.entries(snapshot.messageQueue)) {
+      if (queue.length > 0) this.messageQueue.set(wid, [...queue]);
+    }
+
+    this.messageIdCounter = snapshot.messageIdCounter;
+
+    for (const lock of snapshot.locks) {
+      this.lockManager.acquire(lock.path, lock.workerId);
+    }
+
+    for (const [wid, dt] of Object.entries(snapshot.dispatchedTasks)) {
+      this.dispatchedTasks.set(wid, { ...dt });
+    }
+
+    console.log(`[state-store] Restored ${workerCount} worker(s), ${Object.keys(snapshot.messageQueue).length} queue(s), ${snapshot.locks.length} lock(s)`);
   }
 }
 

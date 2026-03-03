@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import type express from "express";
 import { join } from "path";
-import { existsSync, mkdirSync, appendFileSync } from "fs";
+import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync, statSync, realpathSync } from "fs";
 import { sendInputToTty } from "./tty-input.js";
 import type { ProcessManager } from "./process-mgr.js";
 import type { ProcessDiscovery } from "./discovery.js";
@@ -270,5 +270,73 @@ export function registerApiRoutes(
     res.json(receiver.getDebugState(discovery));
   });
 
-  console.log("  Dispatch API registered: /api/workers, /api/message, /api/message-queue, /api/queue, /api/locks, /api/conflicts, /api/scratchpad, /api/audit, /api/artifacts, /api/learning, /api/signals, /api/debug");
+  // POST /api/spawn
+  app.post("/api/spawn", requireAuth, (req, res) => {
+    const { project, task } = req.body as { project?: string; task?: string };
+    if (!project) {
+      res.status(400).json({ error: "Missing project" });
+      return;
+    }
+
+    const HOME = process.env.HOME || `/Users/${process.env.USER}`;
+    const resolved = project.startsWith("~/") ? join(HOME, project.slice(2)) : project;
+
+    let realPath: string;
+    try {
+      realPath = realpathSync(resolved);
+    } catch {
+      res.status(400).json({ error: `Project path does not exist: ${resolved}` });
+      return;
+    }
+
+    if (!realPath.startsWith(HOME)) {
+      res.status(403).json({ error: "Project path must be under home directory" });
+      return;
+    }
+
+    if (receiver.getAll().length >= 4) {
+      res.status(409).json({ error: "All 4 slots are occupied" });
+      return;
+    }
+
+    const workerId = procMgr.spawn(realPath, task || null);
+    res.json({ ok: true, workerId });
+  });
+
+  // GET /api/projects
+  app.get("/api/projects", requireAuth, (_req, res) => {
+    const HOME = process.env.HOME || `/Users/${process.env.USER}`;
+    const projectsDir = join(HOME, "factory", "projects");
+    try {
+      const entries = readdirSync(projectsDir);
+      const projects = entries
+        .filter(name => {
+          try {
+            return statSync(join(projectsDir, name)).isDirectory();
+          } catch { return false; }
+        })
+        .map(name => ({ name, path: join(projectsDir, name) }));
+      res.json({ projects });
+    } catch {
+      res.json({ projects: [] });
+    }
+  });
+
+  // GET /api/notifications/config
+  app.get("/api/notifications/config", requireAuth, (_req, res) => {
+    const HOME = process.env.HOME || `/Users/${process.env.USER}`;
+    const configPath = join(HOME, ".hive", "notifications.json");
+    try {
+      if (existsSync(configPath)) {
+        const config = JSON.parse(readFileSync(configPath, "utf-8"));
+        res.json(config);
+      } else {
+        res.json({ enabled: true, cooldownMs: 60000, errorThreshold: 3, sound: true });
+      }
+    } catch {
+      res.status(500).json({ error: "Failed to read notification config" });
+    }
+  });
+
+  console.log("  Dispatch API registered: /api/workers, /api/message, /api/message-queue, /api/queue, /api/locks, /api/conflicts, /api/scratchpad, /api/audit, /api/artifacts, /api/learning, /api/signals, /api/debug, /api/spawn, /api/projects, /api/notifications/config");
 }
