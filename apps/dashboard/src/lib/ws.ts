@@ -9,6 +9,7 @@ export function useHive(daemonUrl: string) {
   const [connected, setConnected] = useState(false);
   const [workers, setWorkers] = useState<Map<string, WorkerState>>(new Map());
   const [chatEntries, setChatEntries] = useState<Map<string, ChatEntry[]>>(new Map());
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -152,6 +153,11 @@ export function useHive(daemonUrl: string) {
             break;
           }
 
+          case "auth": {
+            setIsAdmin(data.admin ?? false);
+            break;
+          }
+
           case "orchestrator":
           case "error":
             break;
@@ -199,5 +205,5 @@ export function useHive(daemonUrl: string) {
     []
   );
 
-  return { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry };
+  return { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin };
 }

@@ -76,6 +76,7 @@ export class WsServer {
       if (!isAdmin) this.readOnlyClients.add(ws);
       // Send current workers list — viewers get this too (the whole point)
       this.send(ws, { type: "workers", workers: this.telemetry.getAll() });
+      this.send(ws, { type: "auth", admin: isAdmin });
 
       ws.on("message", (raw) => {
         let msg: DaemonMessage;
@@ -283,11 +284,9 @@ export class WsServer {
           this.send(ws, { type: "error", error: `Worker ${msg.workerId} not found or no TTY` });
           return;
         }
-        // Guard: only send if still stuck (prevents double-send if auto-pilot already handled it)
-        if (selWorker.status !== "stuck") {
-          this.send(ws, { type: "error", error: "Already handled" });
-          return;
-        }
+        // Allow selection if worker is stuck OR if it was recently stuck
+        // (auto-pilot may have changed status to "working" but the prompt
+        // is still displayed in the terminal waiting for input)
         const selResult = sendSelectionToTty(selWorker.tty, msg.optionIndex || 0);
         if (selResult.ok) {
           selWorker.status = "working";

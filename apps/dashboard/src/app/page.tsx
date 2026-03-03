@@ -97,7 +97,17 @@ export default function Home() {
     if (savedAgent) setSelectedId(savedAgent);
   }, []);
 
-  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry } = useHive(daemonUrl);
+  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin } = useHive(daemonUrl);
+  const [authError, setAuthError] = useState(false);
+
+  useEffect(() => {
+    if (isAdmin === false && mode === "admin") {
+      lockAdmin();
+      setMode("viewer");
+      setAuthError(true);
+      setTimeout(() => setAuthError(false), 3000);
+    }
+  }, [isAdmin, mode]);
 
   const restoredRef = useRef(false);
   useEffect(() => {
@@ -212,6 +222,10 @@ export default function Home() {
               &times;
             </button>
           </div>
+        )}
+
+        {authError && (
+          <p className="text-center text-[10px] text-[#f87171] mt-2">Wrong token</p>
         )}
 
         <div className="flex items-center justify-center gap-3 mt-2 text-[10px] text-[var(--text-light)]">

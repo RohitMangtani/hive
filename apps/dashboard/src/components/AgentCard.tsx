@@ -122,7 +122,7 @@ export function AgentCard({
           title={flagged ? "Unflag" : "Flag for later"}
         />
       )}
-      <div className="flex items-center gap-2.5 mb-1.5">
+      <div className={`flex items-center gap-2.5 mb-1.5 ${onFlag ? "pr-5" : ""}`}>
         <span className="text-lg font-bold tabular-nums text-[var(--text)]">{num}</span>
         <span
           className={`w-2 h-2 rounded-full shrink-0 ${stuck ? "animate-pulse" : ""}`}

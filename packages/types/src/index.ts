@@ -48,7 +48,7 @@ export interface ChatEntry {
 }
 
 export interface DaemonResponse {
-  type: "workers" | "worker_update" | "chat" | "chat_history" | "orchestrator" | "error" | "queued";
+  type: "workers" | "worker_update" | "chat" | "chat_history" | "orchestrator" | "error" | "queued" | "auth";
   workers?: WorkerState[];
   worker?: WorkerState;
   workerId?: string;
@@ -56,4 +56,5 @@ export interface DaemonResponse {
   messages?: ChatEntry[];
   error?: string;
   position?: number;
+  admin?: boolean;
 }
