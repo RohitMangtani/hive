@@ -51,10 +51,10 @@ export function registerApiRoutes(
     }
 
     if (worker.status === "working") {
-      receiver.enqueueMessage(workerId, content, "api:message");
+      const msgId = receiver.enqueueMessage(workerId, content, "api:message");
       const queue = receiver.getMessageQueueSize(workerId);
-      console.log(`[queue] ${worker.tty}: queued message (${queue} pending, worker ${worker.status})`);
-      res.json({ ok: true, queued: true, position: queue });
+      console.log(`[queue] ${worker.tty}: queued ${msgId} (${queue} pending, worker ${worker.status})`);
+      res.json({ ok: true, queued: true, id: msgId, position: queue });
       return;
     }
 
@@ -77,7 +77,17 @@ export function registerApiRoutes(
 
   // GET /api/message-queue
   app.get("/api/message-queue", requireAuth, (_req, res) => {
-    res.json(receiver.getMessageQueueSizes());
+    res.json(receiver.getMessageQueueDetails());
+  });
+
+  // DELETE /api/message-queue/:id
+  app.delete("/api/message-queue/:id", requireAuth, (req, res) => {
+    const cancelled = receiver.cancelMessage(req.params.id as string);
+    if (cancelled) {
+      res.json({ ok: true, cancelled: req.params.id });
+    } else {
+      res.status(404).json({ error: `Message ${req.params.id} not found in queue` });
+    }
   });
 
   // GET /api/queue
@@ -260,5 +270,5 @@ export function registerApiRoutes(
     res.json(receiver.getDebugState(discovery));
   });
 
-  console.log("  Dispatch API registered: /api/workers, /api/message, /api/queue, /api/locks, /api/conflicts, /api/scratchpad, /api/audit, /api/artifacts, /api/learning, /api/signals, /api/debug");
+  console.log("  Dispatch API registered: /api/workers, /api/message, /api/message-queue, /api/queue, /api/locks, /api/conflicts, /api/scratchpad, /api/audit, /api/artifacts, /api/learning, /api/signals, /api/debug");
 }

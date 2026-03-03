@@ -48,7 +48,8 @@ export class TelemetryReceiver {
   private static readonly MAX_SIGNALS = 50;
 
   // Message queue for busy workers
-  private messageQueue = new Map<string, Array<{ content: string; source: string; queuedAt: number }>>();
+  private messageQueue = new Map<string, Array<{ id: string; content: string; source: string; queuedAt: number }>>();
+  private messageIdCounter = 0;
 
   // Pending hook queue (hooks waiting for session registration)
   private pendingHooks = new Map<string, Array<{ body: Record<string, unknown>; receivedAt: number }>>();
@@ -317,6 +318,7 @@ export class TelemetryReceiver {
 
   removeWorker(id: string): void {
     this.workers.delete(id);
+    this.messageQueue.delete(id);
     this.lastHookTime.delete(id);
     this.toolInFlight.delete(id);
     this.idleConfirmed.delete(id);
@@ -405,11 +407,25 @@ export class TelemetryReceiver {
 
   // --- Message queue ---
 
-  enqueueMessage(workerId: string, content: string, source: string): void {
+  enqueueMessage(workerId: string, content: string, source: string): string {
     if (!this.messageQueue.has(workerId)) {
       this.messageQueue.set(workerId, []);
     }
-    this.messageQueue.get(workerId)!.push({ content, source, queuedAt: Date.now() });
+    const id = `m${++this.messageIdCounter}`;
+    this.messageQueue.get(workerId)!.push({ id, content, source, queuedAt: Date.now() });
+    return id;
+  }
+
+  cancelMessage(messageId: string): boolean {
+    for (const [workerId, queue] of this.messageQueue) {
+      const idx = queue.findIndex(m => m.id === messageId);
+      if (idx !== -1) {
+        queue.splice(idx, 1);
+        if (queue.length === 0) this.messageQueue.delete(workerId);
+        return true;
+      }
+    }
+    return false;
   }
 
   getMessageQueueSize(workerId: string): number {
@@ -424,6 +440,18 @@ export class TelemetryReceiver {
     return result;
   }
 
+  getMessageQueueDetails(): Record<string, Array<{ id: string; preview: string; source: string; queuedAt: number }>> {
+    const result: Record<string, Array<{ id: string; preview: string; source: string; queuedAt: number }>> = {};
+    for (const [wid, queue] of this.messageQueue) {
+      if (queue.length > 0) {
+        result[wid] = queue.map(m => ({
+          id: m.id, preview: m.content.slice(0, 100), source: m.source, queuedAt: m.queuedAt,
+        }));
+      }
+    }
+    return result;
+  }
+
   private drainQueues(): void {
     for (const [workerId, queue] of this.messageQueue) {
       if (queue.length === 0) continue;
@@ -433,7 +461,7 @@ export class TelemetryReceiver {
 
       const msg = queue.shift()!;
       if (Date.now() - msg.queuedAt > 30 * 60 * 1000) {
-        console.log(`[queue] ${worker.tty}: dropped stale message (queued ${Math.round((Date.now() - msg.queuedAt) / 60000)}m ago)`);
+        console.log(`[queue] ${worker.tty}: dropped stale ${msg.id} (queued ${Math.round((Date.now() - msg.queuedAt) / 60000)}m ago)`);
         continue;
       }
 
@@ -448,7 +476,7 @@ export class TelemetryReceiver {
         this.markInputSent(workerId, msg.source);
         this.trackDispatch(workerId, msg.content.slice(0, 200));
         this.notifyExternal(worker);
-        console.log(`[queue] ${worker.tty}: drained queued message (${queue.length} remaining)`);
+        console.log(`[queue] ${worker.tty}: drained ${msg.id} (${queue.length} remaining)`);
       }
       break;
     }
