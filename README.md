@@ -10,10 +10,10 @@ One person. Four agents. The output of a small team.
 
 ## What You Get
 
-- **Stoplight dashboard** — 2x2 grid matching your terminal layout. Green/red/yellow at a glance. Open on your phone, tablet, or second monitor.
+- **Stoplight dashboard** — 2x2 grid matching your terminal layout. Green/red/yellow at a glance. Each tile shows what the agent is doing and what you last asked it. Open on your phone, tablet, or second monitor.
 - **Auto-discovery** — start `claude` in any terminal and the daemon finds it within 3 seconds. No registration, no config.
 - **Auto-pilot** — permission prompts auto-approve after a 3-second grace window. Agents never sit idle waiting for a click.
-- **Messaging** — tap any tile, type a message, it goes straight to that agent's terminal. Direct agents from your phone.
+- **Messaging** — tap any tile, type a message, it goes straight to that agent's terminal. Messages queue if the agent is busy and drain automatically when it's ready. Direct agents from your phone.
 - **Coordination** — file locks prevent two agents from editing the same file. Task queue auto-dispatches work to idle agents. Scratchpad lets agents leave notes for each other.
 - **Compound learning** — every solved problem gets written to a per-project knowledge file. The next agent reads it before starting. Your fleet gets smarter over time.
 
@@ -103,7 +103,7 @@ Detects Claude processes within 3 seconds via `ps` + `lsof`. No configuration ne
 ### Status Tracking
 Three-layer detection pipeline determines real-time status:
 1. **Hook events** — Claude Code hooks report every tool call to the daemon
-2. **JSONL analysis** — reads the agent's conversation log for recent activity
+2. **JSONL analysis** — reads the agent's conversation log for recent activity, extracts the last user message as a direction summary
 3. **CPU signal** — falls back to CPU usage (>8% = working) when hooks are delayed
 
 ### Auto-Pilot
@@ -139,8 +139,9 @@ All endpoints require the auth token from `~/.hive/token` via the `Authorization
 ### Messaging
 | Method | Endpoint | Body | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/message` | `{workerId, content}` | Send a prompt to any agent. Queued if agent is busy. |
-| `GET` | `/api/message-queue` | — | View pending message queue sizes per agent |
+| `POST` | `/api/message` | `{workerId, content}` | Send a prompt to any agent. Queued if busy, returns message ID. |
+| `GET` | `/api/message-queue` | — | View queued messages with IDs, previews, and timestamps |
+| `DELETE` | `/api/message-queue/:id` | — | Cancel a queued message before it's delivered |
 
 ### Task Queue
 | Method | Endpoint | Body | Description |
