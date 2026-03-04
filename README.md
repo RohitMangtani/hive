@@ -169,7 +169,7 @@ Agent 2 receives: "Previous step completed by Q3: created src/api/users.ts, crea
 Every solved problem gets written to a per-project knowledge file (`.claude/hive-learnings.md`). The next agent that works on that project reads it before starting. Every debugging session, every style correction, every architectural decision compounds. After months of running, the system knows things about your projects that no fresh agent could replicate.
 
 ### Watchdog
-Monitors agents for stuck loops (same tool called 6+ times in a row). Sends warnings and can auto-intervene. Detects when agents are spinning on a problem and need a different approach.
+Monitors agents for stuck loops (same tool called 6+ times in a row). Detects when agents are spinning on a problem and escalates to the dashboard so you can intervene. Does not send messages to agents automatically.
 
 ## API Reference
 
@@ -349,6 +349,23 @@ Dashboard (Next.js, port 3000)
 - Make sure you're on Node.js 20+: `node -v`
 - Try `npm install` from the project root
 - For TypeScript errors: `npx turbo build` to see full output
+
+## Install as App
+
+The dashboard is a PWA (Progressive Web App). After deploying, install it on your phone for the best experience:
+
+**iPhone / iPad:**
+1. Open the dashboard URL in Safari
+2. Tap the share button (box with arrow)
+3. Tap "Add to Home Screen"
+4. Open from your home screen — full-screen, no browser chrome
+
+**Android:**
+1. Open the dashboard URL in Chrome
+2. Tap the three-dot menu
+3. Tap "Add to Home screen" or "Install app"
+
+The app caches itself via service worker, so repeat opens are instant. It works like a native app — own icon, own entry in the app switcher, dark status bar matching the dashboard theme.
 
 ## Deploy Your Own Dashboard
 
