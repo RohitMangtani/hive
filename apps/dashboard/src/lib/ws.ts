@@ -15,6 +15,7 @@ export function useHive(daemonUrl: string) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const subscribedRef = useRef<string | null>(null);
   const [connectEpoch, setConnectEpoch] = useState(0);
+  const reconnectDelayRef = useRef(500);
   // Track optimistic user messages for dedup: Map<"workerId:text", count>
   const optimisticRef = useRef<Map<string, number>>(new Map());
 
@@ -58,6 +59,7 @@ export function useHive(daemonUrl: string) {
 
       ws.onopen = () => {
         setConnected(true);
+        reconnectDelayRef.current = 500; // Reset backoff on success
         // Re-subscribe if we had a subscription before reconnect
         if (subscribedRef.current) {
           ws.send(JSON.stringify({ type: "subscribe", workerId: subscribedRef.current }));
@@ -177,7 +179,8 @@ export function useHive(daemonUrl: string) {
       ws.onclose = () => {
         setConnected(false);
         wsRef.current = null;
-        reconnectTimerRef.current = setTimeout(connect, 3000);
+        reconnectTimerRef.current = setTimeout(connect, reconnectDelayRef.current);
+        reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 8000);
       };
 
       ws.onerror = () => {

@@ -212,6 +212,19 @@ export function ChatPanel({
             }
             return rendered;
           })()}
+          {worker.status === "working" && entries.length > 0 && entries[entries.length - 1].role === "user" && (
+            <div className="chat-bubble flex justify-start">
+              <div className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-2xl rounded-bl-md px-4 py-3 flex items-center gap-1">
+                {[0, 1, 2].map((i) => (
+                  <span
+                    key={i}
+                    className="w-1.5 h-1.5 rounded-full bg-[var(--text-light)]"
+                    style={{ animation: `typing-dot 1.2s ease-in-out ${i * 0.2}s infinite` }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
           {stuck && (worker.stuckMessage || worker.currentAction) && (
             <div className="chat-bubble flex justify-start">
               <div className="bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.25)] rounded-2xl rounded-bl-md px-4 py-3 text-[15px] leading-relaxed">
