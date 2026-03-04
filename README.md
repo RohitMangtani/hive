@@ -33,6 +33,8 @@ Hive fixes that by giving you one screen where you can see everything.
 - **Coordination** — file locks prevent two agents from editing the same file. Task queue auto-dispatches work to idle agents. Scratchpad lets agents leave notes for each other.
 - **Workflow handoff** — tag related tasks with a workflow ID and the daemon automatically passes context from one agent to the next. When Agent 1 finishes "Build the API," Agent 2 receives a summary of what was built and which files changed before starting "Build the UI." No manual bridging needed for sequential work.
 - **Compound learning** — every solved problem gets written to a per-project knowledge file. The next agent reads it before starting. Your fleet gets smarter over time.
+- **State persistence** — daemon snapshots its state every 30 seconds. If it crashes or you restart, workers, message queues, and locks restore automatically. No lost context.
+- **Push notifications** — when an agent goes yellow (stuck), you get a macOS notification with the project name and what it needs. You do not have to watch the dashboard.
 
 ## Prerequisites
 
@@ -88,6 +90,10 @@ claude
 ```
 
 The daemon auto-discovers agents within 3 seconds. The dashboard shows their status.
+
+**4. Install the app on your phone** (optional, recommended)
+
+Open the dashboard URL on your phone and add it to your home screen. It runs full-screen like a native app. See the [Install as App](#install-as-app) section below.
 
 ## The Quadrant Setup
 
@@ -167,6 +173,12 @@ Agent 2 receives: "Previous step completed by Q3: created src/api/users.ts, crea
 
 ### Compound Learning
 Every solved problem gets written to a per-project knowledge file (`.claude/hive-learnings.md`). The next agent that works on that project reads it before starting. Every debugging session, every style correction, every architectural decision compounds. After months of running, the system knows things about your projects that no fresh agent could replicate.
+
+### State Persistence
+The daemon writes `~/.hive/daemon-state.json` every 30 seconds and on shutdown. If the daemon restarts, it rehydrates workers, message queues, locks, and workflow handoffs from the snapshot (discarded if older than 10 minutes). Discovery reconciles actual processes within 3 seconds. You do not configure this. It just works.
+
+### Push Notifications
+When any agent transitions to stuck (yellow), macOS sends a native notification with the agent name, project, and what it needs. 60-second cooldown per agent prevents spam. Configure at `~/.hive/notifications.json` (enabled, cooldownMs, errorThreshold, sound). Defaults work out of the box.
 
 ### Watchdog
 Monitors agents for stuck loops (same tool called 6+ times in a row). Detects when agents are spinning on a problem and escalates to the dashboard so you can intervene. Does not send messages to agents automatically.
@@ -289,16 +301,19 @@ Daemon (Node.js, port 3001 + 3002)
 ├── Discovery     — finds Claude processes via ps + lsof every 3s
 ├── Telemetry     — receives hook events, maintains worker state
 ├── Auto-pilot    — detects stuck prompts, auto-approves via send-return
-├── Watchdog      — detects stuck loops, sends warnings
+├── Watchdog      — detects stuck loops, escalates to dashboard
+├── State store   — snapshots daemon state every 30s, restores on restart
+├── Notifications — macOS native alerts when agents go stuck
 ├── Task queue    — global work queue, auto-dispatches to idle agents
 ├── Coordination  — file locks, scratchpad, conflict detection, learnings
 ├── API routes    — REST endpoints for all coordination features
 └── WebSocket     — pushes live state to dashboard every second
 
-Dashboard (Next.js, port 3000)
+Dashboard (Next.js, port 3000 — installable as PWA)
 ├── 2×2 grid      — stoplight status cards matching terminal layout
 ├── Live chat     — stream each agent's conversation history
-└── Controls      — send messages, spawn agents, view queue
+├── Controls      — send messages, spawn agents, view queue
+└── Service worker — offline caching, instant repeat loads
 ```
 
 ### Key Files
@@ -313,6 +328,8 @@ Dashboard (Next.js, port 3000)
 | `apps/daemon/src/api-routes.ts` | All REST API endpoints |
 | `apps/daemon/src/ws-server.ts` | WebSocket server for dashboard |
 | `apps/daemon/src/watchdog.ts` | Stuck loop detection |
+| `apps/daemon/src/state-store.ts` | Snapshot persistence across restarts |
+| `apps/daemon/src/notifications.ts` | macOS push notifications on stuck |
 | `apps/daemon/src/task-queue.ts` | Global task queue |
 | `apps/daemon/src/lock-manager.ts` | File lock coordination |
 | `apps/daemon/src/scratchpad.ts` | Ephemeral shared notes |
@@ -384,7 +401,7 @@ Follow the prompts to link your Vercel account. Set one environment variable in 
 
 Replace `YOUR_COMPUTER_IP` with your machine's local IP (find it with `ipconfig getifaddr en0`). This lets the deployed dashboard connect back to your running daemon.
 
-Your instance is completely independent. Your token, your agents, your data. Nothing connects to anyone else's setup.
+Every clone is a completely independent instance. Setup generates a unique auth token at `~/.hive/token`. Your daemon, your agents, your dashboard, your data. Nothing connects to anyone else's setup. Two people can run Hive on the same network without any interference.
 
 ## Development
 
