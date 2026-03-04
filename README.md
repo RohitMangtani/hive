@@ -31,6 +31,8 @@ The quadrant layout solves this. Your brain is good at spatial memory. When you 
 
 **Put it on any screen.** Prop up a tablet next to your laptop and leave the dashboard open. Set it on a second monitor. The four colored dots sit there updating in real time while you do other things. When a dot turns yellow, you notice it in your peripheral vision without switching windows or checking anything. It is a status board for your AI fleet, the same way a wall monitor in an ops center shows system health at a glance.
 
+**Flag agents for later.** Each tile has a small circle in the corner. Tap it and the tile turns orange. That agent is flagged. Use it to mark which agent you want to come back to, which one has something interesting you have not reviewed yet, or which one you want to give a new task when you are ready. Tap again to unflag. It is a bookmark for your attention.
+
 **Talk to agents from your phone.** Tap any tile, type a message, it goes straight to that agent's terminal. Direct all four agents from the couch. The 2x2 grid on your phone matches the 2x2 grid on your screen, so you always know which agent you are talking to.
 
 **Agents coordinate without you bridging every message.** File locks prevent two agents from editing the same file. Task queue auto-dispatches work to idle agents. Scratchpad lets agents leave notes for each other. Workflow handoff passes context from one step to the next automatically. You handle direction. They handle implementation.
