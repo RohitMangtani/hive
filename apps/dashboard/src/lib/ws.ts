@@ -14,6 +14,7 @@ export function useHive(daemonUrl: string) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const subscribedRef = useRef<string | null>(null);
+  const [connectEpoch, setConnectEpoch] = useState(0);
   // Track optimistic user messages for dedup: Map<"workerId:text", count>
   const optimisticRef = useRef<Map<string, number>>(new Map());
 
@@ -195,7 +196,7 @@ export function useHive(daemonUrl: string) {
       }
       setConnected(false);
     };
-  }, [daemonUrl]);
+  }, [daemonUrl, connectEpoch]);
 
   /** Optimistically add a user message to the chat (shows immediately before server echo) */
   const addOptimisticEntry = useCallback(
@@ -213,5 +214,21 @@ export function useHive(daemonUrl: string) {
     []
   );
 
-  return { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin };
+  /** Force reconnect (e.g. after token change) */
+  const reconnect = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setIsAdmin(null);
+    setConnected(false);
+    setConnectEpoch((e) => e + 1);
+  }, []);
+
+  return { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect };
 }

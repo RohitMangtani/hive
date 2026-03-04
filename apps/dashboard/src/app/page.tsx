@@ -97,13 +97,22 @@ export default function Home() {
     if (savedAgent) setSelectedId(savedAgent);
   }, []);
 
-  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin } = useHive(daemonUrl);
+  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect } = useHive(daemonUrl);
   const [authError, setAuthError] = useState(false);
 
   useEffect(() => {
-    if (isAdmin === false && mode === "admin") {
+    if (isAdmin === true && mode === "viewer") {
+      // Server confirmed admin — promote
+      setMode("admin");
+    } else if (isAdmin === false && mode === "admin") {
+      // Server rejected — demote
       lockAdmin();
       setMode("viewer");
+      setAuthError(true);
+      setTimeout(() => setAuthError(false), 3000);
+    } else if (isAdmin === false && localStorage.getItem("hive_token")) {
+      // Had a token stored but server rejected it — wrong token
+      lockAdmin();
       setAuthError(true);
       setTimeout(() => setAuthError(false), 3000);
     }
@@ -173,7 +182,7 @@ export default function Home() {
           ) : (
             <button
               type="button"
-              onClick={() => { if (window.confirm("Log out of admin?")) { lockAdmin(); setMode("viewer"); window.location.reload(); } }}
+              onClick={() => { if (window.confirm("Log out of admin?")) { lockAdmin(); setMode("viewer"); reconnect(); } }}
               className="absolute left-0 top-0 text-[10px] text-[var(--text-light)] hover:text-[var(--text)] transition-colors px-2 py-1 cursor-pointer"
               title="Lock (return to view-only)"
             >
@@ -193,7 +202,7 @@ export default function Home() {
                   unlockAdmin(tokenInput.trim());
                   setShowUnlock(false);
                   setTokenInput("");
-                  window.location.reload();
+                  reconnect();
                 }
               }}
               placeholder="Paste admin token"
@@ -207,7 +216,7 @@ export default function Home() {
                   unlockAdmin(tokenInput.trim());
                   setShowUnlock(false);
                   setTokenInput("");
-                  window.location.reload();
+                  reconnect();
                 }
               }}
               className="text-xs text-[var(--text-light)] hover:text-[var(--text)] px-2 py-1 cursor-pointer"
