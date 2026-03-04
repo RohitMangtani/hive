@@ -2,7 +2,6 @@ import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync } fr
 import { join } from "path";
 import { execSync } from "child_process";
 import type { TelemetryReceiver } from "./telemetry.js";
-import { sendInputToTty } from "./tty-input.js";
 
 /**
  * Self-diagnostic watchdog: reads the audit log, detects anomalies,
@@ -123,40 +122,12 @@ export class Watchdog {
 
       if (tracked.escalated) continue; // Already escalated, waiting for human
 
-      // --- DISPATCH to idle agent ---
-      // Never dispatch to the worker that IS the anomaly (e.g. flapping_ttys002
-      // should not be sent to the worker ON ttys002 — that would wake it up,
-      // adding more transitions and making the flapping worse).
-      const anomalyTty = (anomaly.data.tty as string) || "";
-      const idle = this.telemetry.getAll().find(
-        w => w.status === "idle" && w.tty && w.project.includes("hive") && w.tty !== anomalyTty
-      );
-
-      if (!idle?.tty) {
-        if (tracked.attempts === 0) {
-          console.log(`[watchdog] Anomaly ${anomaly.type}: no idle hive agent to dispatch to`);
-        }
-        continue;
-      }
-
-      const learnings = this.readLearnings();
-      const task = this.buildTask(anomaly, tracked.attempts, learnings);
-
-      const result = sendInputToTty(idle.tty, task);
-      if (result.ok) {
-        tracked.attempts++;
+      // Log-only: watchdog diagnoses but never auto-sends messages to agents.
+      // The human decides when and how to act on anomalies via the dashboard.
+      if (tracked.attempts === 0) {
+        tracked.attempts = 1;
         tracked.lastDispatched = now;
-        tracked.dispatchedTo = idle.id;
-
-        idle.status = "working";
-        idle.currentAction = "Watchdog diagnostic";
-        idle.lastAction = `Received watchdog task: ${anomaly.type}`;
-        idle.lastActionAt = now;
-        idle.stuckMessage = undefined;
-        this.telemetry.markInputSent(idle.id, "watchdog");
-        this.telemetry.trackDispatch(idle.id, `Watchdog: ${anomaly.type} — ${anomaly.description.slice(0, 150)}`);
-        this.telemetry.notifyExternal(idle);
-        console.log(`[watchdog] Dispatched ${anomaly.type} to ${idle.tty} (attempt ${tracked.attempts}/${MAX_ATTEMPTS})`);
+        console.log(`[watchdog] Detected ${anomaly.type}: ${anomaly.description.slice(0, 150)}`);
       }
     }
 
@@ -446,53 +417,4 @@ export class Watchdog {
     return anomalies;
   }
 
-  /** Read hive-learnings.md so dispatched agents benefit from past corrections. */
-  private readLearnings(): string {
-    const paths = [
-      join(HIVE_PROJECT, ".claude", "hive-learnings.md"),
-      join(HIVE_PROJECT, "apps", "daemon", ".claude", "hive-learnings.md"),
-    ];
-
-    for (const p of paths) {
-      if (existsSync(p)) {
-        try {
-          const content = readFileSync(p, "utf-8").trim();
-          if (content.length > 0) return content;
-        } catch { /* continue to next */ }
-      }
-    }
-    return "";
-  }
-
-  /** Build a focused debugging task from a single anomaly. */
-  private buildTask(anomaly: Anomaly, attempt: number, learnings: string): string {
-    const lines = [
-      `[Watchdog Diagnostic — attempt ${attempt + 1}/${MAX_ATTEMPTS}]`,
-      `The Hive daemon detected an anomaly in the quadrant audit log.`,
-      `Read the audit log at /tmp/quadrant-audit.log and the discovery logic at ~/factory/projects/hive/apps/daemon/src/discovery.ts.`,
-      `Trace the root cause, implement a minimal fix, run \`cd ~/factory/projects/hive/apps/daemon && npm run build\`, and verify.`,
-      "",
-      `## ${anomaly.type} (${anomaly.severity})`,
-      anomaly.description,
-      `Data: ${JSON.stringify(anomaly.data)}`,
-      "",
-    ];
-
-    if (attempt > 0) {
-      lines.push(`NOTE: This is attempt ${attempt + 1}. Previous fix did not resolve the anomaly. Try a different approach.`);
-      lines.push("");
-    }
-
-    if (learnings) {
-      lines.push("## Past learnings (from hive-learnings.md)");
-      // Only include last 500 chars to avoid overwhelming the prompt
-      const trimmed = learnings.length > 500 ? learnings.slice(-500) : learnings;
-      lines.push(trimmed);
-      lines.push("");
-    }
-
-    lines.push("After implementing, run the build. If it fails, fix it.");
-
-    return lines.join("\n");
-  }
 }

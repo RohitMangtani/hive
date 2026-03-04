@@ -235,9 +235,30 @@ export class ProcessDiscovery {
           };
 
           if (hookAge < 5_000) {
-            // Hooks are live (<5s) — trust hook-set status directly
-            if (existing.status === "working") this.lastConfirmedWorking.set(id, Date.now());
-            this.checkTransition(id, tty, existing.status, `hooks fresh (${Math.round(hookAge)}ms)`, auditCtx);
+            // Hooks are live (<5s) — trust hook-set status, but apply hysteresis
+            // for working→idle transitions to prevent flapping (58 transitions/15min).
+            if (existing.status === "working") {
+              this.lastConfirmedWorking.set(id, Date.now());
+              this.consecutiveIdleChecks.set(id, 0);
+              this.checkTransition(id, tty, "working", `hooks fresh (${Math.round(hookAge)}ms)`, auditCtx);
+            } else if (existing.status === "idle") {
+              const prevTrans = this.prevStatus.get(id);
+              if (prevTrans === "working") {
+                // Require 2 consecutive idle checks before transitioning
+                const idleCount = (this.consecutiveIdleChecks.get(id) || 0) + 1;
+                this.consecutiveIdleChecks.set(id, idleCount);
+                if (idleCount < 2) {
+                  this.checkTransition(id, tty, "working", `hooks fresh idle but hysteresis (${idleCount}/2)`, auditCtx);
+                } else {
+                  this.checkTransition(id, tty, "idle", `hooks fresh (${Math.round(hookAge)}ms) hysteresis=${idleCount}`, auditCtx);
+                }
+              } else {
+                this.checkTransition(id, tty, "idle", `hooks fresh (${Math.round(hookAge)}ms)`, auditCtx);
+              }
+            } else {
+              // stuck, waiting — pass through
+              this.checkTransition(id, tty, existing.status, `hooks fresh (${Math.round(hookAge)}ms)`, auditCtx);
+            }
           } else if (hookAge < 15_000) {
             // Hooks recent (<15s) — trust hook state for stuck/toolInFlight
             if (existing.status === "stuck") {
