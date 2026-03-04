@@ -38,12 +38,6 @@ export function useHive(daemonUrl: string) {
       }
       subscribedRef.current = workerId;
       if (workerId) {
-        // Clear existing entries so the fresh history from server replaces them
-        setChatEntries((prev) => {
-          const next = new Map(prev);
-          next.delete(workerId);
-          return next;
-        });
         send({ type: "subscribe", workerId });
       }
     },
@@ -66,14 +60,7 @@ export function useHive(daemonUrl: string) {
         setConnected(true);
         // Re-subscribe if we had a subscription before reconnect
         if (subscribedRef.current) {
-          const wid = subscribedRef.current;
-          // Clear stale entries so fresh history from server replaces them
-          setChatEntries((prev) => {
-            const next = new Map(prev);
-            next.delete(wid);
-            return next;
-          });
-          ws.send(JSON.stringify({ type: "subscribe", workerId: wid }));
+          ws.send(JSON.stringify({ type: "subscribe", workerId: subscribedRef.current }));
         }
       };
 
@@ -113,30 +100,46 @@ export function useHive(daemonUrl: string) {
             if (data.workerId && data.messages) {
               const wid = data.workerId;
               const newEntries = data.messages;
-              setChatEntries((prev) => {
-                const next = new Map(prev);
-                const existing = next.get(wid) ?? [];
-                // Dedup: skip incoming user messages that match a tracked optimistic entry.
-                // Each optimistic send registers a key; the first matching echo consumes it.
-                const deduped = newEntries.filter(e => {
-                  if (e.role === "user") {
-                    const key = `${wid}:${e.text}`;
-                    const count = optimisticRef.current.get(key);
-                    if (count && count > 0) {
-                      if (count === 1) optimisticRef.current.delete(key);
-                      else optimisticRef.current.set(key, count - 1);
-                      return false;
-                    }
-                  }
-                  return true;
-                });
-                const updated = [...existing, ...deduped];
-                if (updated.length > MAX_CHAT_ENTRIES) {
-                  updated.splice(0, updated.length - MAX_CHAT_ENTRIES);
+
+              if (data.full) {
+                // Full history — authoritative replace from server.
+                // Reset optimistic tracking for this worker since server is ground truth.
+                for (const key of optimisticRef.current.keys()) {
+                  if (key.startsWith(`${wid}:`)) optimisticRef.current.delete(key);
                 }
-                next.set(wid, updated);
-                return next;
-              });
+                setChatEntries((prev) => {
+                  const next = new Map(prev);
+                  const updated = newEntries.length > MAX_CHAT_ENTRIES
+                    ? newEntries.slice(-MAX_CHAT_ENTRIES)
+                    : [...newEntries];
+                  next.set(wid, updated);
+                  return next;
+                });
+              } else {
+                // Incremental update — append with optimistic dedup.
+                setChatEntries((prev) => {
+                  const next = new Map(prev);
+                  const existing = next.get(wid) ?? [];
+                  const deduped = newEntries.filter(e => {
+                    if (e.role === "user") {
+                      const key = `${wid}:${e.text}`;
+                      const count = optimisticRef.current.get(key);
+                      if (count && count > 0) {
+                        if (count === 1) optimisticRef.current.delete(key);
+                        else optimisticRef.current.set(key, count - 1);
+                        return false;
+                      }
+                    }
+                    return true;
+                  });
+                  const updated = [...existing, ...deduped];
+                  if (updated.length > MAX_CHAT_ENTRIES) {
+                    updated.splice(0, updated.length - MAX_CHAT_ENTRIES);
+                  }
+                  next.set(wid, updated);
+                  return next;
+                });
+              }
             }
             break;
           }

@@ -145,11 +145,9 @@ export class WsServer {
         const workerId = msg.workerId;
         this.clientSubs.set(ws, workerId);
 
-        // Send chat history
+        // Send chat history (full = authoritative replace on client)
         const history = this.streamer.readHistory(workerId);
-        if (history.length > 0) {
-          this.send(ws, { type: "chat_history", workerId, messages: history });
-        }
+        this.send(ws, { type: "chat_history", workerId, messages: history, full: true });
 
         // Start streaming new messages
         const subKey = workerId + "_" + this.clientId(ws);

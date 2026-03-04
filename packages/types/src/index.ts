@@ -54,6 +54,7 @@ export interface DaemonResponse {
   workerId?: string;
   content?: string;
   messages?: ChatEntry[];
+  full?: boolean;
   error?: string;
   position?: number;
   admin?: boolean;
