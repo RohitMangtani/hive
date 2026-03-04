@@ -16,8 +16,10 @@ export function useHive(daemonUrl: string) {
   const subscribedRef = useRef<string | null>(null);
   const [connectEpoch, setConnectEpoch] = useState(0);
   const reconnectDelayRef = useRef(500);
-  // Track optimistic user messages for dedup: Map<"workerId:text", count>
-  const optimisticRef = useRef<Map<string, number>>(new Map());
+  // Track optimistic user messages for dedup: Set of unique IDs
+  const optimisticIdsRef = useRef<Set<string>>(new Set());
+  // Monotonic counter for unique optimistic entry IDs
+  const optimisticSeqRef = useRef(0);
 
   const send = useCallback(
     (msg: DaemonMessage): boolean => {
@@ -105,15 +107,35 @@ export function useHive(daemonUrl: string) {
 
               if (data.full) {
                 // Full history — authoritative replace from server.
-                // Reset optimistic tracking for this worker since server is ground truth.
-                for (const key of optimisticRef.current.keys()) {
-                  if (key.startsWith(`${wid}:`)) optimisticRef.current.delete(key);
-                }
+                // Merge: server state is ground truth, but append any optimistic
+                // user messages that aren't yet reflected in the server history.
                 setChatEntries((prev) => {
                   const next = new Map(prev);
-                  const updated = newEntries.length > MAX_CHAT_ENTRIES
+                  const serverEntries = newEntries.length > MAX_CHAT_ENTRIES
                     ? newEntries.slice(-MAX_CHAT_ENTRIES)
                     : [...newEntries];
+
+                  // Find optimistic entries not yet in server history
+                  const existing = prev.get(wid) ?? [];
+                  const pendingOptimistic = existing.filter(e =>
+                    e.role === "user" && e._optimisticId && optimisticIdsRef.current.has(e._optimisticId)
+                  );
+
+                  // Check which optimistic entries are already in server history
+                  // by matching text against the last N server user messages
+                  const serverUserTexts = new Set(
+                    serverEntries.filter(e => e.role === "user").slice(-10).map(e => e.text)
+                  );
+                  const stillPending = pendingOptimistic.filter(e => !serverUserTexts.has(e.text));
+
+                  // Clear all optimistic IDs that ARE in server history
+                  for (const e of pendingOptimistic) {
+                    if (e._optimisticId && serverUserTexts.has(e.text)) {
+                      optimisticIdsRef.current.delete(e._optimisticId);
+                    }
+                  }
+
+                  const updated = [...serverEntries, ...stillPending];
                   next.set(wid, updated);
                   return next;
                 });
@@ -122,18 +144,32 @@ export function useHive(daemonUrl: string) {
                 setChatEntries((prev) => {
                   const next = new Map(prev);
                   const existing = next.get(wid) ?? [];
+
                   const deduped = newEntries.filter(e => {
                     if (e.role === "user") {
-                      const key = `${wid}:${e.text}`;
-                      const count = optimisticRef.current.get(key);
-                      if (count && count > 0) {
-                        if (count === 1) optimisticRef.current.delete(key);
-                        else optimisticRef.current.set(key, count - 1);
+                      // Find the oldest matching optimistic entry and consume it
+                      for (const oid of optimisticIdsRef.current) {
+                        const match = existing.find(x =>
+                          x._optimisticId === oid && x.text === e.text
+                        );
+                        if (match) {
+                          optimisticIdsRef.current.delete(oid);
+                          return false; // Skip server echo — optimistic already shown
+                        }
+                      }
+                      // Also deduplicate against the very last entry to catch edge cases
+                      const last = existing[existing.length - 1];
+                      if (last?.role === "user" && last.text === e.text && !last._optimisticId) {
+                        // Same text from server arrived twice — skip
                         return false;
                       }
                     }
                     return true;
                   });
+
+                  if (deduped.length === 0) {
+                    return prev; // No change — skip re-render
+                  }
                   const updated = [...existing, ...deduped];
                   if (updated.length > MAX_CHAT_ENTRIES) {
                     updated.splice(0, updated.length - MAX_CHAT_ENTRIES);
@@ -207,15 +243,17 @@ export function useHive(daemonUrl: string) {
   /** Optimistically add a user message to the chat (shows immediately before server echo) */
   const addOptimisticEntry = useCallback(
     (workerId: string, text: string) => {
-      const key = `${workerId}:${text}`;
-      optimisticRef.current.set(key, (optimisticRef.current.get(key) || 0) + 1);
-      const entry: ChatEntry = { role: "user", text, timestamp: Date.now() };
+      const oid = `opt_${++optimisticSeqRef.current}`;
+      optimisticIdsRef.current.add(oid);
+      const entry: ChatEntry = { role: "user", text, timestamp: Date.now(), _optimisticId: oid };
       setChatEntries((prev) => {
         const next = new Map(prev);
         const existing = next.get(workerId) ?? [];
         next.set(workerId, [...existing, entry]);
         return next;
       });
+      // Auto-expire optimistic tracking after 30s (server echo should arrive well before)
+      setTimeout(() => { optimisticIdsRef.current.delete(oid); }, 30_000);
     },
     []
   );

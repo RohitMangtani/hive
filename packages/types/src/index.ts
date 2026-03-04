@@ -45,6 +45,8 @@ export interface ChatEntry {
   role: "user" | "agent" | "tool";
   text: string;
   timestamp?: number;
+  /** Client-only: tracks optimistic entries for dedup against server echoes */
+  _optimisticId?: string;
 }
 
 export interface DaemonResponse {

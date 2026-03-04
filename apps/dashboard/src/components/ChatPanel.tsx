@@ -16,10 +16,20 @@ export function ChatPanel({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
   const touchStartY = useRef<number | null>(null);
+  const lastSendRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
   const color = dotColor(worker);
   const canSend = worker.managed || !!worker.tty;
   const stuck = worker.status === "stuck";
   const buttons = stuck ? quickButtons(worker) : [];
+
+  // Guard against double-sends from rapid clicks/keypresses before React re-renders
+  const guardedSend = (msg: string): boolean => {
+    const now = Date.now();
+    if (msg === lastSendRef.current.text && now - lastSendRef.current.at < 1000) return false;
+    const ok = onSend(msg);
+    if (ok) lastSendRef.current = { text: msg, at: now };
+    return ok;
+  };
 
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
@@ -256,7 +266,7 @@ export function ChatPanel({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                     e.preventDefault();
-                    if (draft.trim()) { const sent = onSend(draft.trim()); if (sent) onDraftChange(""); }
+                    if (draft.trim()) { const sent = guardedSend(draft.trim()); if (sent) onDraftChange(""); }
                   }
                 }}
                 onFocus={() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }}
@@ -267,7 +277,7 @@ export function ChatPanel({
               <button
                 type="button"
                 disabled={!draft.trim()}
-                onClick={() => { if (draft.trim()) { const sent = onSend(draft.trim()); if (sent) onDraftChange(""); } }}
+                onClick={() => { if (draft.trim()) { const sent = guardedSend(draft.trim()); if (sent) onDraftChange(""); } }}
                 className="send-btn"
               >
                 Send

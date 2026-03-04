@@ -574,8 +574,12 @@ export class ProcessDiscovery {
           // Cap at 3 minutes to prevent permanent green from runaway processes.
           const cpuPct = this.getCpuForPid(existing.pid);
           const ptyDelta = this.getPtyOutputDelta(existing.pid);
-          // Only use CPU for keepalive — PTY alone triggers on user typing (~900B echo).
-          const isActive = cpuPct > 25 && workingCooldown < 180_000;
+          // Working keepalive: agent was RECENTLY confirmed working (tool calls).
+          // During text generation, CPU is 10-25% (lower than tool calls).
+          // Use 8% threshold here (not 25%) because the agent is already confirmed
+          // working — we just need to detect it's still alive. 25% is for idle→working
+          // where we need to distinguish agent work from user typing.
+          const isActive = (cpuPct > 8 || ptyDelta > 500) && workingCooldown < 180_000;
 
           if (isActive) {
             existing.status = "working";
