@@ -151,9 +151,9 @@ export class WsServer {
 
         // Start streaming new messages
         const subKey = workerId + "_" + this.clientId(ws);
-        this.streamer.subscribe(subKey, workerId, (entries) => {
+        this.streamer.subscribe(subKey, workerId, (entries, full) => {
           if (ws.readyState === WebSocket.OPEN) {
-            this.send(ws, { type: "chat_history", workerId, messages: entries });
+            this.send(ws, { type: "chat_history", workerId, messages: entries, ...(full ? { full: true } : {}) });
           }
         });
 

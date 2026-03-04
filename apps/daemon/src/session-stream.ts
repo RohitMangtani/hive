@@ -13,7 +13,7 @@ interface Subscription {
   byteOffset: number;
   timer: ReturnType<typeof setInterval>;
   watcher: FSWatcher | null;
-  callback: (entries: ChatEntry[]) => void;
+  callback: (entries: ChatEntry[], full?: boolean) => void;
   nudgeTimers: ReturnType<typeof setTimeout>[];
 }
 
@@ -94,7 +94,7 @@ export class SessionStreamer {
    * @param workerId - plain worker ID used to look up the session file
    * @param callback - receives new chat entries
    */
-  subscribe(subKey: string, workerId: string, callback: (entries: ChatEntry[]) => void): void {
+  subscribe(subKey: string, workerId: string, callback: (entries: ChatEntry[], full?: boolean) => void): void {
     this.unsubscribe(subKey);
 
     const filePath = this.sessionFiles.get(workerId);
@@ -161,12 +161,14 @@ export class SessionStreamer {
 
     // Detect session file change (context compaction creates a new JSONL).
     // Discovery updates sessionFiles on every scan — if the file changed,
-    // switch to the new one and send its full history as new entries.
+    // switch to the new one and send its full history as a full replace.
+    let isFileChange = false;
     const currentFile = this.sessionFiles.get(sub.workerId);
     if (currentFile && currentFile !== sub.filePath) {
       if (sub.watcher) sub.watcher.close();
       sub.filePath = currentFile;
       sub.byteOffset = 0; // Read from start of new file
+      isFileChange = true;
       try {
         sub.watcher = watch(currentFile, () => this.poll(subKey));
       } catch { sub.watcher = null; }
@@ -188,7 +190,8 @@ export class SessionStreamer {
       }
 
       if (entries.length > 0) {
-        sub.callback(entries);
+        // File change = full replace (prevents duplicate entries after context compaction)
+        sub.callback(entries, isFileChange);
       }
     } catch {
       // File might have been deleted/rotated
