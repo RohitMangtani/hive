@@ -2,8 +2,6 @@
 
 See all your AI agents on one screen. Green means working. Red means done. Yellow means stuck. Type into any tile to talk to it.
 
-**[See the live dashboard](https://dashboard-flame-two-83.vercel.app?viewer=d6c8f4964e4fb13247a08bb616da88d557b4f34b503f1b9fe96e824822bd2bf0)** (view-only, connects to a real running instance)
-
 Think about Find My iPhone. You open one app and see every Apple device you own. Green dot, online. Grey dot, offline. You do not open a separate app for each device. One visual layer shows you everything. Hive does the same thing for AI agents. Open four terminals, run `claude` in each, and the dashboard shows you what all of them are doing. No alt-tabbing. No guessing which one finished. No lost output from an agent stuck on a permission prompt you did not notice.
 
 One person. Four agents. The output of a small team.
@@ -427,11 +425,6 @@ The project uses npm workspaces with Turbo for build orchestration. The daemon a
 ## How This Was Built
 
 This was built using the agents it manages. Four Claude Code instances iterated on the daemon and dashboard simultaneously while a human directed architecture and resolved conflicts. The compound learning system was tested in production from day one, with each session's lessons feeding the next.
-
-- [What Hive Is](https://www.rohitmangtani.com/projects/hive) — What it does, how it works, and where it fits
-- [A Visual Workflow for AI Agents](https://www.rohitmangtani.com/writing/the-steering-wheel) — Why a visual layer changes what you can build
-- [Game Plan](https://rmgtni.xyz/lab/hive-game-plan) — The product edge and what comes next
-- [System Audit](https://rmgtni.xyz/lab/hive-system-audit) — Full technical deep dive, competitor analysis, and strategy
 
 ## License
 
