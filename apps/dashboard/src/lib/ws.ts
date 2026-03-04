@@ -5,6 +5,9 @@ import type { ChatEntry, DaemonMessage, DaemonResponse, WorkerState } from "@/li
 
 const MAX_CHAT_ENTRIES = 200;
 
+/** Normalize text for comparison — matches tty-input.ts cleaning */
+const norm = (s: string) => s.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+
 export function useHive(daemonUrl: string) {
   const [connected, setConnected] = useState(false);
   const [workers, setWorkers] = useState<Map<string, WorkerState>>(new Map());
@@ -122,15 +125,15 @@ export function useHive(daemonUrl: string) {
                   );
 
                   // Check which optimistic entries are already in server history
-                  // by matching text against the last N server user messages
+                  // by matching normalized text against the last N server user messages
                   const serverUserTexts = new Set(
-                    serverEntries.filter(e => e.role === "user").slice(-10).map(e => e.text)
+                    serverEntries.filter(e => e.role === "user").slice(-10).map(e => norm(e.text))
                   );
-                  const stillPending = pendingOptimistic.filter(e => !serverUserTexts.has(e.text));
+                  const stillPending = pendingOptimistic.filter(e => !serverUserTexts.has(norm(e.text)));
 
                   // Clear all optimistic IDs that ARE in server history
                   for (const e of pendingOptimistic) {
-                    if (e._optimisticId && serverUserTexts.has(e.text)) {
+                    if (e._optimisticId && serverUserTexts.has(norm(e.text))) {
                       optimisticIdsRef.current.delete(e._optimisticId);
                     }
                   }
@@ -147,10 +150,11 @@ export function useHive(daemonUrl: string) {
 
                   const deduped = newEntries.filter(e => {
                     if (e.role === "user") {
+                      const eNorm = norm(e.text);
                       // Find the oldest matching optimistic entry and consume it
                       for (const oid of optimisticIdsRef.current) {
                         const match = existing.find(x =>
-                          x._optimisticId === oid && x.text === e.text
+                          x._optimisticId === oid && norm(x.text) === eNorm
                         );
                         if (match) {
                           optimisticIdsRef.current.delete(oid);
@@ -159,7 +163,7 @@ export function useHive(daemonUrl: string) {
                       }
                       // Also deduplicate against the very last entry to catch edge cases
                       const last = existing[existing.length - 1];
-                      if (last?.role === "user" && last.text === e.text && !last._optimisticId) {
+                      if (last?.role === "user" && norm(last.text) === eNorm && !last._optimisticId) {
                         // Same text from server arrived twice — skip
                         return false;
                       }

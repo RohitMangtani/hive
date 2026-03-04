@@ -312,7 +312,10 @@ export default function Home() {
           onSend={(msg) => {
             const ok = send({ type: "message", workerId: selectedEntry.worker.id, content: msg });
             if (ok) {
-              addOptimisticEntry(selectedEntry.worker.id, msg);
+              // Normalize to match tty-input.ts cleaning (newlines→spaces, collapse whitespace)
+              // so optimistic text matches the JSONL echo for dedup
+              const normalized = msg.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+              addOptimisticEntry(selectedEntry.worker.id, normalized);
             }
             return ok;
           }}
