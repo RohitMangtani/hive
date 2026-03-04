@@ -8,6 +8,22 @@ Think about Find My iPhone. You open one app and see every Apple device you own.
 
 One person. Four agents. The output of a small team.
 
+## Why This Helps
+
+Running one AI agent is manageable. Running four at once on different tasks is where things break down. You lose track of which one finished, which one is stuck, and which one drifted from what you asked. You end up alt-tabbing between terminals, re-reading output, and spending more energy tracking status than directing work.
+
+Hive fixes that by giving you one screen where you can see everything.
+
+**You can walk away.** Start four agents on four tasks, close your laptop, come back an hour later. The dashboard shows you exactly where each one stands. Green means it kept working. Yellow means it hit something and waited for you. Red means it finished. You pick up exactly where things paused without re-reading anything.
+
+**You catch problems by looking, not reading.** When all four tiles are green, everything is fine. When one turns yellow, your eye goes there automatically. You do not need to read logs or scroll terminal output. The color tells you which agent needs attention and which ones are fine. This is faster than reading because your brain processes color before it processes text.
+
+**Agents coordinate without you bridging every message.** If Agent 1 finds something Agent 3 needs to know, you can send that context directly through the dashboard. Agents can leave notes for each other on a shared scratchpad. They can queue tasks for the next available agent. File locks prevent two agents from stepping on each other's edits. You are still in charge of the big decisions, but the routine coordination happens without you manually copying context between terminals.
+
+**Every session makes the next one better.** When an agent solves a tricky problem, the solution gets saved to a learning file. The next agent that works on that project reads it before starting. After weeks of running, the system knows your project's quirks, your preferred patterns, your past fixes. Fresh agents start with months of accumulated knowledge instead of a blank slate.
+
+**The safeguards are built in.** Auto-pilot handles permission prompts so agents do not stall on routine approvals. A watchdog detects when an agent is looping on the same error and flags it. File locks prevent edit conflicts. You get a grace period before auto-pilot acts, so you can override from the dashboard if you want to answer differently. The system keeps agents moving while giving you final say on anything that matters.
+
 ## What You Get
 
 - **Stoplight dashboard** — 2x2 grid matching your terminal layout. Green/red/yellow at a glance. Each tile shows what the agent is doing and what you last asked it. Open on your phone, tablet, or second monitor.
@@ -94,6 +110,20 @@ Each agent gets a quadrant number based on when it started (earliest = Q1). The 
 - **Yellow** — stuck, needs input
 
 Tap any tile to open its chat. Type a message and it goes straight to that agent's terminal.
+
+### How to Use the Quadrants
+
+**Assign tasks by complexity, not by file.** Give your hardest task to Q1 so you can keep an eye on it in the top-left. Put your most independent tasks in Q3 and Q4 where they can run unattended longest.
+
+**Check in by glancing, not by reading.** When you look at the grid and all four dots are green, keep doing whatever you are doing. When one turns yellow, tap it, read the question, answer it, and go back to what you were doing. The whole interaction takes seconds.
+
+**Walk away and come back.** Start all four agents, close the laptop, go to lunch. When you come back, the dashboard shows you exactly what happened. Green tiles finished and moved on. Yellow tiles are waiting for you. Red tiles are done. You do not need to scroll through terminal history to reconstruct what happened while you were gone.
+
+**Talk to agents from your phone.** Open the dashboard on your phone while your computer runs. Tap a yellow tile, read what it is stuck on, type your answer, and it keeps going. You can direct all four agents from the couch.
+
+**Bridge context between agents.** When Agent 1 discovers something Agent 3 needs, tap Agent 3's tile and paste the relevant finding. Or use the scratchpad so any agent can read it. You are the one connecting dots across the fleet. The agents handle the implementation. You handle the direction.
+
+**Give commands to specific agents.** Tap any tile and type a plain English instruction: "Stop what you are doing and fix the login bug first" or "Read what Agent 2 just committed and review it." The message goes straight to that agent's terminal as if you typed it there.
 
 ## How It Works
 
@@ -304,6 +334,25 @@ Dashboard (Next.js, port 3000)
 - Try `npm install` from the project root
 - For TypeScript errors: `npx turbo build` to see full output
 
+## Deploy Your Own Dashboard
+
+The local setup (`localhost:3000`) works out of the box. If you want the dashboard accessible from your phone or another device, deploy it to your own Vercel account:
+
+```bash
+cd apps/dashboard
+npx vercel
+```
+
+Follow the prompts to link your Vercel account. Set one environment variable in the Vercel dashboard:
+
+| Variable | Value |
+|----------|-------|
+| `NEXT_PUBLIC_WS_URL` | `ws://YOUR_COMPUTER_IP:3002` |
+
+Replace `YOUR_COMPUTER_IP` with your machine's local IP (find it with `ipconfig getifaddr en0`). This lets the deployed dashboard connect back to your running daemon.
+
+Your instance is completely independent. Your token, your agents, your data. Nothing connects to anyone else's setup.
+
 ## Development
 
 ```bash
@@ -329,7 +378,8 @@ The project uses npm workspaces with Turbo for build orchestration. The daemon a
 
 This was built using the agents it manages. Four Claude Code instances iterated on the daemon and dashboard simultaneously while a human directed architecture and resolved conflicts. The compound learning system was tested in production from day one, with each session's lessons feeding the next.
 
-- [What Hive Is](https://www.rohitmangtani.com/lab/hive) — What it does, how it works, and where it fits
+- [What Hive Is](https://www.rohitmangtani.com/projects/hive) — What it does, how it works, and where it fits
+- [A Visual Workflow for AI Agents](https://www.rohitmangtani.com/writing/the-steering-wheel) — Why a visual layer changes what you can build
 - [Game Plan](https://rmgtni.xyz/lab/hive-game-plan) — The product edge and what comes next
 - [System Audit](https://rmgtni.xyz/lab/hive-system-audit) — Full technical deep dive, competitor analysis, and strategy
 

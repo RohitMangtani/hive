@@ -16,7 +16,10 @@ import { readTail } from "./utils.js";
  * Grace period: 3s so a human on the dashboard can intervene first.
  */
 
-const GRACE_PERIOD_MS = 0;
+// Grace period: how long to wait before auto-selecting.
+// Gives the human time to see yellow and manually pick an option.
+// If the user selects before this expires, auto-pilot never fires.
+const GRACE_PERIOD_MS = 15_000;
 const COOLDOWN_MS = 4_000;
 
 export class AutoPilot {
@@ -61,10 +64,17 @@ export class AutoPilot {
 
       // AskUserQuestion/EnterPlanMode use ink's selection UI which ignores
       // `do script` text injection. Send arrow keys + Enter via System Events.
-      const isSelectionPrompt = (worker.currentAction || "").includes("question") ||
-        (worker.currentAction || "").includes("Asking") ||
-        (worker.currentAction || "").includes("EnterPlanMode") ||
-        (worker.currentAction || "").includes("ExitPlanMode");
+      // Check both currentAction AND stuckMessage — discovery may clear currentAction
+      // before auto-pilot fires, but stuckMessage persists while status is "stuck".
+      const action = (worker.currentAction || "").toLowerCase();
+      const hasNumberedOptions = !!(worker.stuckMessage && /\n\d\.\s/.test(worker.stuckMessage));
+      const isSelectionPrompt = action.includes("question") ||
+        action.includes("asking") ||
+        action.includes("enterplanmode") ||
+        action.includes("exitplanmode") ||
+        action.includes("plan mode") ||
+        action.includes("approval") ||
+        hasNumberedOptions;
       const result = isSelectionPrompt
         ? sendSelectionToTty(worker.tty, parseInt(response.text, 10) - 1 || 0)
         : sendInputToTty(worker.tty, response.text);
@@ -83,6 +93,10 @@ export class AutoPilot {
         this.telemetry.notifyExternal(worker);
 
         console.log(`[auto-pilot] ${worker.tty}: sent "${response.text}" — ${response.reason} (waited ${Math.round(waitedMs / 1000)}s)`);
+      } else {
+        // Failed to send — don't mark as responded, let it retry next tick
+        this.lastAutoSend.set(worker.id, now); // cooldown before retry
+        console.log(`[auto-pilot] ${worker.tty}: FAILED to send "${response.text}" — ${result.error} (will retry)`);
       }
     }
 
@@ -218,6 +232,10 @@ export class AutoPilot {
         this.telemetry.notifyExternal(worker);
 
         console.log(`[auto-pilot] ${worker.tty}: sent "${prompt.response}" via ${prompt.isSelection ? "selection" : "text"} — ${prompt.reason} (JSONL, waited ${Math.round(waitedMs / 1000)}s)`);
+      } else {
+        // Failed — don't mark as responded, retry next tick after cooldown
+        this.lastAutoSend.set(worker.id, now);
+        console.log(`[auto-pilot] ${worker.tty}: FAILED JSONL send "${prompt.response}" — ${result.error} (will retry)`);
       }
     }
   }
