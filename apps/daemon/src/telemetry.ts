@@ -133,8 +133,12 @@ export class TelemetryReceiver {
     });
 
     app.post("/hook", requireAuth, (req, res) => {
-      this.handleHook(req.body);
-      res.json({ ok: true });
+      const decision = this.handleHook(req.body);
+      if (decision) {
+        res.json(decision);
+      } else {
+        res.json({ ok: true });
+      }
     });
 
     // Session→TTY correction endpoint.
@@ -904,14 +908,14 @@ export class TelemetryReceiver {
 
   // --- Hook handling ---
 
-  private handleHook(body: Record<string, unknown>): void {
+  private handleHook(body: Record<string, unknown>): { decision: string; reason: string } | undefined {
     const sessionId = body.session_id as string | undefined;
     const eventName = body.hook_event_name as string | undefined;
     const toolName = body.tool_name as string | undefined;
     const toolInput = body.tool_input as Record<string, unknown> | undefined;
     const cwd = body.cwd as string | undefined;
 
-    if (!sessionId || !eventName) return;
+    if (!sessionId || !eventName) return undefined;
 
     let workerId = this.sessionToWorker.get(sessionId);
 
@@ -930,17 +934,17 @@ export class TelemetryReceiver {
           workerId = best.id;
         } else {
           this.enqueueHook(sessionId, body);
-          return;
+          return undefined;
         }
       }
     }
 
     if (!workerId) {
       this.enqueueHook(sessionId, body);
-      return;
+      return undefined;
     }
 
-    this.processHook(workerId, body, sessionId, eventName, toolName, toolInput, cwd);
+    return this.processHook(workerId, body, sessionId, eventName, toolName, toolInput, cwd);
   }
 
   private processHook(
@@ -951,7 +955,7 @@ export class TelemetryReceiver {
     toolName: string | undefined,
     toolInput: Record<string, unknown> | undefined,
     cwd: string | undefined,
-  ): void {
+  ): { decision: string; reason: string } | undefined {
     const worker = this.workers.get(workerId);
     if (!worker) return;
 
@@ -997,6 +1001,23 @@ export class TelemetryReceiver {
         worker.currentAction = action;
         worker.lastAction = action;
         this.recordSignal(workerId, "PreToolUse", action);
+
+        // File lock enforcement: block Edit/Write if another agent holds the lock
+        if ((toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit") && toolInput) {
+          const filePath = (toolInput.file_path || toolInput.notebook_path) as string | undefined;
+          if (filePath) {
+            const lockResult = this.lockManager.acquire(filePath, workerId);
+            if (!lockResult.acquired) {
+              const holderName = lockResult.holder?.tty || lockResult.holder?.workerId || "another agent";
+              const reason = `File locked by ${holderName}. They are actively editing this file. Wait for them to finish or coordinate via scratchpad.`;
+              this.recordSignal(workerId, "PreToolUse", `BLOCKED: ${filePath} locked by ${holderName}`);
+              console.log(`[lock-enforce] Blocked ${worker.tty || workerId} from writing ${filePath} (held by ${holderName})`);
+              this.collector?.record(workerId, sessionId, body);
+              this.notify(worker);
+              return { decision: "block", reason };
+            }
+          }
+        }
         break;
       }
 
@@ -1010,9 +1031,11 @@ export class TelemetryReceiver {
         worker.lastAction = postAction;
         this.recordSignal(workerId, "PostToolUse", postAction);
         if (toolName && toolInput) {
-          const filePath = toolInput.file_path as string | undefined;
-          if (filePath && (toolName === "Edit" || toolName === "Write")) {
+          const filePath = (toolInput.file_path || toolInput.notebook_path) as string | undefined;
+          if (filePath && (toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit")) {
             this.recordArtifact(workerId, filePath, toolName === "Edit" ? "edited" : "created");
+            // Auto-acquire lock on successful write
+            this.lockManager.acquire(filePath, workerId);
           }
         }
         break;
@@ -1085,6 +1108,7 @@ export class TelemetryReceiver {
 
     this.collector?.record(workerId, sessionId, body);
     this.notify(worker);
+    return undefined;
   }
 
   // --- Pending hook queue ---
