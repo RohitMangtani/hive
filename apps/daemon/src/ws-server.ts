@@ -311,6 +311,17 @@ export class WsServer {
         break;
       }
 
+      case "suggestion_feedback": {
+        if (msg.workerId && msg.appliedLabel && msg.shownLabels) {
+          this.telemetry.recordSuggestionFeedback(
+            msg.workerId,
+            msg.appliedLabel,
+            msg.shownLabels
+          );
+        }
+        break;
+      }
+
       case "orchestrator": {
         this.send(ws, {
           type: "orchestrator",

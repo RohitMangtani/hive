@@ -89,15 +89,70 @@ export function quickButtons(w: WorkerState): { label: string; value: string; in
   return [{ label: "1", value: "1" }, { label: "2", value: "2" }, { label: "3", value: "3" }, { label: "4", value: "4" }];
 }
 
-export { dotColor, DOT_BG, statusLabel, statusWord, badgeStyle };
+/**
+ * Suggest next-step actions for idle agents based on their last action.
+ * Pattern-matches on lastAction (set by daemon describeAction).
+ * No AI call — pure string matching.
+ */
+function idleSuggestions(w: WorkerState): { label: string; message: string }[] {
+  const last = (w.lastAction || "").toLowerCase();
+
+  // After file edits
+  if (last.includes("edit") || last.includes("creat") || last.includes("writ")) {
+    return [
+      { label: "Run tests", message: "Run the test suite and fix any failures" },
+      { label: "Commit", message: "Commit your recent changes with a descriptive message" },
+      { label: "Review diff", message: "Show me a git diff of your recent changes" },
+    ];
+  }
+
+  // After committing / pushing
+  if (last.includes("commit") || last.includes("push")) {
+    return [
+      { label: "Push", message: "Push your commits to the remote" },
+      { label: "Next task", message: "What should be done next in this project?" },
+    ];
+  }
+
+  // After reading / exploring
+  if (last.includes("read") || last.includes("search") || last.includes("glob") || last.includes("grep") || last.includes("exploring")) {
+    return [
+      { label: "Implement", message: "Based on what you explored, implement the necessary changes" },
+      { label: "Summarize", message: "Summarize what you found" },
+    ];
+  }
+
+  // After running commands (tests, builds, scripts)
+  if (last.includes("running") || last.includes("command") || last.includes("bash") || last.includes("test")) {
+    return [
+      { label: "Fix issues", message: "Fix any issues from the last command run" },
+      { label: "Continue", message: "Continue with the next step" },
+    ];
+  }
+
+  // After receiving a message / finishing dispatched task
+  if (last.includes("received") || last.includes("message") || last.includes("finished")) {
+    return [
+      { label: "Continue", message: "Continue working on the task you were given" },
+    ];
+  }
+
+  // Default — no specific context
+  return [
+    { label: "Status", message: "What's the current state of this project? What needs to be done?" },
+    { label: "Continue", message: "Continue where you left off" },
+  ];
+}
+
+export { dotColor, DOT_BG, statusLabel, statusWord, badgeStyle, idleSuggestions };
 export type { DotColor };
 
 const FLAG_COLOR = "#f97316";
 
 export function AgentCard({
-  worker, num, selected, flagged, onClick, onPointerDown, onSend, onSelect, onFlag,
+  worker, num, selected, flagged, onClick, onPointerDown, onSend, onSelect, onFlag, onSuggestionApply,
 }: {
-  worker: WorkerState; num: number; selected: boolean; flagged?: boolean; onClick: () => void; onPointerDown?: () => void; onSend: (msg: string) => void; onSelect?: (index: number) => void; onFlag?: () => void;
+  worker: WorkerState; num: number; selected: boolean; flagged?: boolean; onClick: () => void; onPointerDown?: () => void; onSend: (msg: string) => void; onSelect?: (index: number) => void; onFlag?: () => void; onSuggestionApply?: (appliedLabel: string, shownLabels: string[]) => void;
 }) {
   const color = dotColor(worker);
   const stuck = color === "yellow";
@@ -170,13 +225,45 @@ export function AgentCard({
         </div>
       )}
 
-      {idle && (
-        <div className="ready-overlay absolute inset-0 flex items-center justify-center pointer-events-none rounded-[10px]">
-          <span className="text-4xl font-bold tracking-[0.25em] uppercase text-white opacity-[0.16]">
-            READY
-          </span>
-        </div>
-      )}
+      {idle && (() => {
+        const suggestions = worker.suggestions && worker.suggestions.length > 0
+          ? worker.suggestions.map((s) => ({ label: s.label, message: s.message, reason: s.reason }))
+          : idleSuggestions(worker).map((s) => ({ ...s, reason: undefined as string | undefined }));
+        const peek = suggestions[0];
+        return (
+          <div className="ready-overlay absolute inset-0 flex flex-col items-center justify-center rounded-[10px]">
+            <span className="text-4xl font-bold tracking-[0.25em] uppercase text-white opacity-[0.16] pointer-events-none">
+              READY
+            </span>
+            {peek && (worker.managed || !!worker.tty) && (
+              <div className="suggestion-peek mt-2 z-10 w-[85%] max-w-[200px]" onClick={(e) => e.stopPropagation()}>
+                <p className="text-[11px] font-semibold text-[var(--text)] leading-tight truncate">{peek.label}</p>
+                {peek.reason && (
+                  <p className="text-[9px] text-[var(--text-muted)] mt-0.5 leading-snug line-clamp-1">{peek.reason}</p>
+                )}
+                <div className="flex items-center justify-between mt-1.5">
+                  <span className="text-[9px] text-[var(--text-light)]">
+                    {suggestions.length > 1 ? `+${suggestions.length - 1} more` : "Tap to expand"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSend(peek.message);
+                      if (onSuggestionApply) {
+                        onSuggestionApply(peek.label, suggestions.map((x) => x.label));
+                      }
+                    }}
+                    className="apply-btn-mini"
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

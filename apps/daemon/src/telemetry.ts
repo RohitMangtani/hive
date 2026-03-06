@@ -17,6 +17,7 @@ import type { ScratchpadEntry } from "./scratchpad.js";
 import { LockManager } from "./lock-manager.js";
 import { registerApiRoutes } from "./api-routes.js";
 import type { Collector } from "./collector.js";
+import { SuggestionEngine } from "./suggestion-engine.js";
 
 const IDLE_THRESHOLD = 30_000;
 const HOME = process.env.HOME || `/Users/${process.env.USER}`;
@@ -41,6 +42,9 @@ export class TelemetryReceiver {
   // Artifact tracking
   private artifacts = new Map<string, Array<{ path: string; action: string; ts: number }>>();
   private static readonly MAX_ARTIFACTS = 50;
+
+  // LLM suggestion engine (Phase 3)
+  private suggestionEngine = new SuggestionEngine();
 
   // Session file streamer reference (set via setStreamer, used for register-tty correction)
   private streamer: { getSessionFile(id: string): string | null; setSessionFile(id: string, path: string): void } | null = null;
@@ -640,6 +644,7 @@ export class TelemetryReceiver {
         worker.status = "idle";
         worker.currentAction = null;
         this.lockManager.releaseAll(worker.id);
+        this.generateSuggestions(worker);
         this.notify(worker);
       }
     }
@@ -652,6 +657,41 @@ export class TelemetryReceiver {
 
   notifyExternal(worker: WorkerState): void {
     this.notify(worker);
+  }
+
+  /** Trigger LLM suggestion generation for an idle worker */
+  private generateSuggestions(worker: WorkerState): void {
+    if (!this.suggestionEngine.isEnabled()) return;
+    const artifacts = this.getArtifacts(worker.id);
+    this.suggestionEngine.generate(worker, artifacts, (suggestions) => {
+      // Only apply if the worker is still idle
+      const current = this.workers.get(worker.id);
+      if (current && current.status === "idle") {
+        current.suggestions = suggestions;
+        this.notify(current);
+      }
+    });
+  }
+
+  /** Clear suggestions when a worker starts working.
+   *  Records skips for any shown suggestions that weren't applied. */
+  private clearSuggestions(workerId: string): void {
+    const worker = this.workers.get(workerId);
+    if (worker?.suggestions && worker.suggestions.length > 0) {
+      // Phase 4: record skips for all shown suggestions (none were applied via the button)
+      this.suggestionEngine.recordSkipAll(
+        worker.suggestions.map((s) => s.label),
+        worker.project
+      );
+      worker.suggestions = undefined;
+      this.suggestionEngine.clear(workerId);
+    }
+  }
+
+  /** Phase 4: Record that a suggestion was applied from the dashboard */
+  recordSuggestionFeedback(workerId: string, appliedLabel: string, shownLabels: string[]): void {
+    const worker = this.workers.get(workerId);
+    this.suggestionEngine.recordApply(appliedLabel, shownLabels, worker?.project);
   }
 
   // --- Message queue ---
@@ -1074,6 +1114,7 @@ export class TelemetryReceiver {
           worker.stuckMessage = undefined;
           worker.lastAction = "Waiting for input";
           this.lockManager.releaseAll(workerId);
+          this.generateSuggestions(worker);
           this.recordSignal(workerId, "idle_prompt", "done");
           break;
         }
@@ -1103,6 +1144,7 @@ export class TelemetryReceiver {
         this.idleConfirmed.set(workerId, false);
         worker.currentAction = null;
         worker.lastAction = "Session ended";
+        this.generateSuggestions(worker);
         break;
       }
 
@@ -1227,6 +1269,7 @@ export class TelemetryReceiver {
         worker.status = "idle";
         this.toolInFlight.set(event.worker_id, null);
         worker.currentAction = null;
+        this.generateSuggestions(worker);
         worker.lastAction = event.summary || "stopped";
         break;
 
@@ -1245,6 +1288,10 @@ export class TelemetryReceiver {
   }
 
   private notify(worker: WorkerState): void {
+    // Clear LLM suggestions when agent starts working
+    if (worker.status === "working" || worker.status === "stuck") {
+      this.clearSuggestions(worker.id);
+    }
     for (const listener of this.listeners) {
       listener(worker.id, worker);
     }

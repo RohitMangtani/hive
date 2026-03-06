@@ -1,3 +1,9 @@
+export interface Suggestion {
+  label: string;
+  message: string;
+  reason?: string;
+}
+
 export interface WorkerState {
   id: string;
   pid: number;
@@ -14,6 +20,7 @@ export interface WorkerState {
   tty?: string;
   stuckMessage?: string;
   lastDirection?: string;
+  suggestions?: Suggestion[];
 }
 
 export interface TelemetryEvent {
@@ -33,12 +40,16 @@ export interface TelemetryEvent {
 }
 
 export interface DaemonMessage {
-  type: "spawn" | "kill" | "message" | "selection" | "list" | "orchestrator" | "subscribe" | "unsubscribe";
+  type: "spawn" | "kill" | "message" | "selection" | "list" | "orchestrator" | "subscribe" | "unsubscribe" | "suggestion_feedback";
   workerId?: string;
   project?: string;
   task?: string;
   content?: string;
   optionIndex?: number;
+  /** Phase 4: which suggestion label was applied */
+  appliedLabel?: string;
+  /** Phase 4: all suggestion labels that were shown */
+  shownLabels?: string[];
 }
 
 export interface ChatEntry {

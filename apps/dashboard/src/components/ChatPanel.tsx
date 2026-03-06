@@ -1,16 +1,19 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatEntry, WorkerState } from "@/lib/types";
 import { dotColor, DOT_BG, statusLabel, quickButtons } from "./AgentCard";
+import { LivePreview, describePins, type Pin } from "./LivePreview";
 
 export function ChatPanel({
   worker, num, entries, draft, onDraftChange, onSend, onClose, onDismiss, expanded, onExpand,
+  previewUrl, onPreviewUrlChange,
 }: {
   worker: WorkerState; num: number; entries: ChatEntry[];
   draft: string; onDraftChange: (v: string) => void;
   onSend: (msg: string) => boolean; onClose: () => void; onDismiss: () => void;
   expanded: boolean; onExpand: (v: boolean) => void;
+  previewUrl: string; onPreviewUrlChange: (url: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -22,12 +25,37 @@ export function ChatPanel({
   const stuck = worker.status === "stuck";
   const buttons = stuck ? quickButtons(worker) : [];
 
-  // Guard against double-sends from rapid clicks/keypresses before React re-renders
+  // Live preview + reference points
+  const [showPreview, setShowPreview] = useState(false);
+  const [pins, setPins] = useState<Pin[]>([]);
+  const pinCounterRef = useRef(0);
+
+  const handleAddPin = useCallback((x: number, y: number) => {
+    pinCounterRef.current += 1;
+    setPins((prev) => [...prev, { id: pinCounterRef.current, x, y }]);
+  }, []);
+
+  const handleRemovePin = useCallback((id: number) => {
+    setPins((prev) => prev.filter((p) => p.id !== id));
+  }, []);
+
+  const handleClearPins = useCallback(() => {
+    setPins([]);
+    pinCounterRef.current = 0;
+  }, []);
+
+  // Guard against double-sends from rapid clicks/keypresses before React re-renders.
+  // Augments message with pin reference context when pins exist.
   const guardedSend = (msg: string): boolean => {
+    const augmented = msg + describePins(pins);
     const now = Date.now();
-    if (msg === lastSendRef.current.text && now - lastSendRef.current.at < 1000) return false;
-    const ok = onSend(msg);
-    if (ok) lastSendRef.current = { text: msg, at: now };
+    if (augmented === lastSendRef.current.text && now - lastSendRef.current.at < 1000) return false;
+    const ok = onSend(augmented);
+    if (ok) {
+      lastSendRef.current = { text: augmented, at: now };
+      // Clear pins after sending — they've been consumed
+      if (pins.length > 0) handleClearPins();
+    }
     return ok;
   };
 
@@ -123,8 +151,29 @@ export function ChatPanel({
               {statusLabel(worker)}
             </p>
           </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-light)] hover:text-[var(--text)] hover:bg-[var(--bg-panel)] text-lg leading-none transition-colors">&times;</button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setShowPreview((p) => !p)}
+              className={`preview-toggle-btn ${showPreview ? "preview-toggle-active" : ""}`}
+              title={showPreview ? "Hide preview" : "Show live preview"}
+            >
+              {showPreview ? "Hide" : "Preview"}
+            </button>
+            <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full text-[var(--text-light)] hover:text-[var(--text)] hover:bg-[var(--bg-panel)] text-lg leading-none transition-colors">&times;</button>
+          </div>
         </div>
+
+        {showPreview && (
+          <LivePreview
+            url={previewUrl}
+            onUrlChange={onPreviewUrlChange}
+            pins={pins}
+            onAddPin={handleAddPin}
+            onRemovePin={handleRemovePin}
+            onClearPins={handleClearPins}
+          />
+        )}
 
         <div className="relative flex-1 min-h-0">
         <div className="absolute left-2 bottom-2 z-10 flex flex-col gap-1.5">
@@ -256,6 +305,20 @@ export function ChatPanel({
                     {b.label}
                   </button>
                 ))}
+              </div>
+            )}
+            {pins.length > 0 && (
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <span className="text-[10px] text-[var(--accent)]">
+                  {pins.length} pin{pins.length !== 1 ? "s" : ""} attached
+                </span>
+                <button
+                  type="button"
+                  onClick={handleClearPins}
+                  className="text-[10px] text-[var(--text-light)] hover:text-[var(--text)] cursor-pointer"
+                >
+                  clear
+                </button>
               </div>
             )}
             <div className="flex gap-2 items-end">

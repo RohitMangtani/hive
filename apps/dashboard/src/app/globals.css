@@ -97,6 +97,191 @@
     animation: ready-fade 0.6s ease-out;
   }
 
+  /* Idle suggestion buttons — blue accent, subtle */
+  .suggestion-btn {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    color: rgba(59, 130, 246, 0.7);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    pointer-events: auto;
+  }
+
+  .suggestion-btn:hover {
+    background: rgba(59, 130, 246, 0.15);
+    color: #3b82f6;
+    border-color: rgba(59, 130, 246, 0.4);
+  }
+
+  .suggestion-btn:active {
+    transform: scale(0.93);
+  }
+
+  /* Suggestion card in feed */
+  .suggestion-card {
+    display: flex;
+    gap: 12px;
+    padding: 12px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .suggestion-card:hover {
+    border-color: var(--border-light);
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  /* Apply button */
+  .apply-btn {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 16px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .apply-btn:hover {
+    background: #2563eb;
+  }
+
+  .apply-btn:active {
+    transform: scale(0.95);
+  }
+
+  /* Mini apply button on tile peek */
+  .apply-btn-mini {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 5px;
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .apply-btn-mini:hover {
+    background: #2563eb;
+  }
+
+  .apply-btn-mini:active {
+    transform: scale(0.93);
+  }
+
+  /* Suggestion peek on idle tiles */
+  .suggestion-peek {
+    background: rgba(59, 130, 246, 0.05);
+    border: 1px solid rgba(59, 130, 246, 0.15);
+    border-radius: 8px;
+    padding: 8px 10px;
+    pointer-events: auto;
+  }
+
+  .suggestion-peek:hover {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.3);
+  }
+
+  /* Feed scroll */
+  .feed-scroll {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Live preview */
+  .preview-frame {
+    height: 220px;
+  }
+
+  @media (min-width: 640px) {
+    .preview-frame {
+      height: 280px;
+    }
+  }
+
+  .preview-toggle-btn {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(59, 130, 246, 0.06);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    color: rgba(59, 130, 246, 0.6);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .preview-toggle-btn:hover {
+    background: rgba(59, 130, 246, 0.12);
+    color: #3b82f6;
+  }
+
+  .preview-toggle-active {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.4);
+    color: #3b82f6;
+  }
+
+  .preview-pin {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid white;
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    transition: transform 0.15s ease;
+    pointer-events: auto;
+    z-index: 5;
+    animation: pin-drop 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  }
+
+  .preview-pin:hover {
+    transform: translate(-50%, -50%) scale(1.15);
+  }
+
+  .preview-pin-active {
+    background: rgba(59, 130, 246, 0.2) !important;
+    border-color: var(--accent) !important;
+    color: #3b82f6 !important;
+  }
+
+  .preview-url-input {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-family: monospace;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .preview-url-input:focus {
+    border-color: var(--accent);
+  }
+
+  .preview-url-input::placeholder {
+    color: var(--text-light);
+  }
+
   /* Chat panel — slides up from bottom */
   .chat-panel {
     animation: slide-up 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94);
@@ -230,4 +415,30 @@
 @keyframes typing-dot {
   0%, 60%, 100% { opacity: 0.2; transform: translateY(0); }
   30% { opacity: 1; transform: translateY(-3px); }
+}
+
+@keyframes pin-drop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes expand-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-expand-in {
+  animation: expand-in 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
