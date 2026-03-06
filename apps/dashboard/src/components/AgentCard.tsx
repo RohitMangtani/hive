@@ -226,39 +226,34 @@ export function AgentCard({
       )}
 
       {idle && (() => {
+        // Use LLM suggestions when available, fall back to templates
         const suggestions = worker.suggestions && worker.suggestions.length > 0
-          ? worker.suggestions.map((s) => ({ label: s.label, message: s.message, reason: s.reason }))
-          : idleSuggestions(worker).map((s) => ({ ...s, reason: undefined as string | undefined }));
-        const peek = suggestions[0];
+          ? worker.suggestions.map((s) => ({ label: s.label, message: s.message }))
+          : idleSuggestions(worker);
         return (
           <div className="ready-overlay absolute inset-0 flex flex-col items-center justify-center rounded-[10px]">
             <span className="text-4xl font-bold tracking-[0.25em] uppercase text-white opacity-[0.16] pointer-events-none">
               READY
             </span>
-            {peek && (worker.managed || !!worker.tty) && (
-              <div className="suggestion-peek mt-2 z-10 w-[85%] max-w-[200px]" onClick={(e) => e.stopPropagation()}>
-                <p className="text-[11px] font-semibold text-[var(--text)] leading-tight truncate">{peek.label}</p>
-                {peek.reason && (
-                  <p className="text-[9px] text-[var(--text-muted)] mt-0.5 leading-snug line-clamp-1">{peek.reason}</p>
-                )}
-                <div className="flex items-center justify-between mt-1.5">
-                  <span className="text-[9px] text-[var(--text-light)]">
-                    {suggestions.length > 1 ? `+${suggestions.length - 1} more` : "Tap to expand"}
-                  </span>
+            {(worker.managed || !!worker.tty) && (
+              <div className="flex items-center gap-1 mt-2 flex-wrap justify-center z-10" onClick={(e) => e.stopPropagation()}>
+                {suggestions.map((s) => (
                   <button
+                    key={s.label}
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      onSend(peek.message);
+                      onSend(s.message);
                       if (onSuggestionApply) {
-                        onSuggestionApply(peek.label, suggestions.map((x) => x.label));
+                        onSuggestionApply(s.label, suggestions.map((x) => x.label));
                       }
                     }}
-                    className="apply-btn-mini"
+                    className="suggestion-btn"
+                    title={worker.suggestions?.find((ws) => ws.label === s.label)?.reason}
                   >
-                    Apply
+                    {s.label}
                   </button>
-                </div>
+                ))}
               </div>
             )}
           </div>

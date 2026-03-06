@@ -5,7 +5,7 @@ import { useHive } from "@/lib/ws";
 import { getAuthMode, unlockAdmin, lockAdmin } from "@/components/SitePasswordGate";
 import { SpawnDialog } from "@/components/SpawnDialog";
 import { AgentCard, DOT_BG } from "@/components/AgentCard";
-import { ExpandedView } from "@/components/ExpandedView";
+import { ChatPanel } from "@/components/ChatPanel";
 import type { WorkerState } from "@/lib/types";
 
 const DEFAULT_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3002";
@@ -56,6 +56,7 @@ export default function Home() {
   const [showUnlock, setShowUnlock] = useState(false);
   const [tokenInput, setTokenInput] = useState("");
   const [showSpawn, setShowSpawn] = useState(false);
+  const [chatExpanded, setChatExpanded] = useState(false);
   const draftsRef = useRef<Map<string, string>>(new Map());
   const [, setDraftTick] = useState(0);
   const [flaggedIds, setFlaggedIds] = useState<Set<string>>(new Set());
@@ -111,16 +112,13 @@ export default function Home() {
 
   useEffect(() => {
     if (isAdmin === true && mode === "viewer") {
-      // Server confirmed admin — promote
       setMode("admin");
     } else if (isAdmin === false && mode === "admin") {
-      // Server rejected — demote
       lockAdmin();
       setMode("viewer");
       setAuthError(true);
       setTimeout(() => setAuthError(false), 3000);
     } else if (isAdmin === false && localStorage.getItem("hive_token")) {
-      // Had a token stored but server rejected it — wrong token
       lockAdmin();
       setAuthError(true);
       setTimeout(() => setAuthError(false), 3000);
@@ -159,6 +157,7 @@ export default function Home() {
 
   const toggleSelect = useCallback((id: string) => {
     const nextId = selectedId === id ? null : id;
+    setChatExpanded(false);
     setSelectedId(nextId);
     subscribeTo(nextId);
   }, [selectedId, subscribeTo]);
@@ -166,7 +165,10 @@ export default function Home() {
   return (
     <div className="h-dvh flex flex-col overflow-hidden bg-[var(--bg)]">
       {/* Header */}
-      <header className="shrink-0 px-4 sm:px-6 pt-4 pb-3">
+      <header
+        className={`shrink-0 px-4 sm:px-6 pt-4 pb-3 transition-[background-color] duration-500 ease-in-out ${chatExpanded ? "bg-[rgba(255,255,255,0.06)] cursor-pointer" : ""}`}
+        onClick={() => { if (chatExpanded) { setChatExpanded(false); } }}
+      >
         <div className="text-center relative">
           <h1 className="text-sm font-bold tracking-[0.18em] uppercase text-[var(--text)]">Hive</h1>
           <div className="flex items-center justify-center gap-1.5 mt-1">
@@ -250,14 +252,63 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Expanded view — replaces grid when tile is selected (admin only) */}
-      {!isViewer && selectedEntry ? (
-        <ExpandedView
+      {/* Body — 2x2 grid */}
+      <div
+        className={`min-h-0 grid grid-cols-2 grid-rows-2 gap-3 p-4 sm:p-6 transition-all duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] ${!isViewer && selectedEntry ? "shrink-0" : "flex-1"}`}
+        style={!isViewer && selectedEntry ? { flexBasis: chatExpanded ? "0px" : "40%", maxHeight: chatExpanded ? "0px" : "none", overflow: chatExpanded ? "hidden" : "visible", padding: chatExpanded ? "0px" : undefined, gap: chatExpanded ? "0px" : undefined } : undefined}
+      >
+        {Array.from({ length: MAX_SLOTS }, (_, i) => i + 1).map((slot) => {
+          const entry = numbered.find(({ num }) => num === slot);
+          if (!entry) {
+            return (
+              <div
+                key={slot}
+                className={`card relative flex items-center justify-center ${isViewer ? "opacity-40" : "opacity-40 hover:opacity-60 cursor-pointer transition-opacity"}`}
+                style={{ borderLeftColor: "var(--border)" }}
+                onClick={isViewer ? undefined : () => setShowSpawn(true)}
+              >
+                <div className="flex items-center gap-2.5 absolute top-3 left-3">
+                  <span className="text-lg font-bold tabular-nums text-[var(--text-light)]">{slot}</span>
+                  <span className="w-2 h-2 rounded-full shrink-0 bg-[var(--border)]" />
+                </div>
+                <span className="text-4xl font-bold tracking-[0.25em] uppercase text-white opacity-[0.16]">
+                  OFFLINE
+                </span>
+                {!isViewer && (
+                  <span className="absolute bottom-3 text-[10px] text-[var(--text-muted)]">Click to spawn</span>
+                )}
+              </div>
+            );
+          }
+          const { worker: w, num } = entry;
+          return (
+            <AgentCard
+              key={w.id}
+              worker={w}
+              num={num}
+              selected={!isViewer && selectedId === w.id}
+              flagged={flaggedIds.has(w.id)}
+              onClick={isViewer ? () => {} : () => toggleSelect(w.id)}
+              onPointerDown={isViewer ? undefined : () => { if (selectedId !== w.id) subscribeTo(w.id); }}
+              onSend={isViewer ? () => {} : (msg) => send({ type: "message", workerId: w.id, content: msg })}
+              onSelect={isViewer ? undefined : (index) => send({ type: "selection", workerId: w.id, optionIndex: index })}
+              onFlag={isViewer ? undefined : () => toggleFlag(w.id)}
+              onSuggestionApply={isViewer ? undefined : (appliedLabel, shownLabels) => send({ type: "suggestion_feedback", workerId: w.id, appliedLabel, shownLabels })}
+            />
+          );
+        })}
+      </div>
+
+      {/* Inline chat panel — admin only */}
+      {!isViewer && selectedEntry && (
+        <ChatPanel
           key={selectedEntry.worker.id}
           worker={selectedEntry.worker}
           num={selectedEntry.num}
           entries={memoEntries}
           draft={draftsRef.current.get(selectedEntry.worker.id) || ""}
+          expanded={chatExpanded}
+          onExpand={setChatExpanded}
           previewUrl={previewUrlsRef.current.get(selectedEntry.worker.project) || ""}
           onPreviewUrlChange={(url) => {
             if (url) {
@@ -286,55 +337,21 @@ export default function Home() {
             return ok;
           }}
           onDismiss={() => {
+            setChatExpanded(false);
             setSelectedId(null);
             subscribeTo(null);
           }}
-          onSuggestionApply={(appliedLabel, shownLabels) => send({ type: "suggestion_feedback", workerId: selectedEntry.worker.id, appliedLabel, shownLabels })}
+          onClose={() => {
+            setChatExpanded(false);
+            draftsRef.current.delete(selectedEntry.worker.id);
+            try {
+              const obj = Object.fromEntries(draftsRef.current);
+              localStorage.setItem("hive_drafts", JSON.stringify(obj));
+            } catch { /* non-critical */ }
+            setSelectedId(null);
+            subscribeTo(null);
+          }}
         />
-      ) : (
-        /* Body — 2x2 grid */
-        <div className="min-h-0 grid grid-cols-2 grid-rows-2 gap-3 p-4 sm:p-6 flex-1">
-          {Array.from({ length: MAX_SLOTS }, (_, i) => i + 1).map((slot) => {
-            const entry = numbered.find(({ num }) => num === slot);
-            if (!entry) {
-              return (
-                <div
-                  key={slot}
-                  className={`card relative flex items-center justify-center ${isViewer ? "opacity-40" : "opacity-40 hover:opacity-60 cursor-pointer transition-opacity"}`}
-                  style={{ borderLeftColor: "var(--border)" }}
-                  onClick={isViewer ? undefined : () => setShowSpawn(true)}
-                >
-                  <div className="flex items-center gap-2.5 absolute top-3 left-3">
-                    <span className="text-lg font-bold tabular-nums text-[var(--text-light)]">{slot}</span>
-                    <span className="w-2 h-2 rounded-full shrink-0 bg-[var(--border)]" />
-                  </div>
-                  <span className="text-4xl font-bold tracking-[0.25em] uppercase text-white opacity-[0.16]">
-                    OFFLINE
-                  </span>
-                  {!isViewer && (
-                    <span className="absolute bottom-3 text-[10px] text-[var(--text-muted)]">Click to spawn</span>
-                  )}
-                </div>
-              );
-            }
-            const { worker: w, num } = entry;
-            return (
-              <AgentCard
-                key={w.id}
-                worker={w}
-                num={num}
-                selected={false}
-                flagged={flaggedIds.has(w.id)}
-                onClick={isViewer ? () => {} : () => toggleSelect(w.id)}
-                onPointerDown={isViewer ? undefined : () => { if (selectedId !== w.id) subscribeTo(w.id); }}
-                onSend={isViewer ? () => {} : (msg) => send({ type: "message", workerId: w.id, content: msg })}
-                onSelect={isViewer ? undefined : (index) => send({ type: "selection", workerId: w.id, optionIndex: index })}
-                onFlag={isViewer ? undefined : () => toggleFlag(w.id)}
-                onSuggestionApply={isViewer ? undefined : (appliedLabel, shownLabels) => send({ type: "suggestion_feedback", workerId: w.id, appliedLabel, shownLabels })}
-              />
-            );
-          })}
-        </div>
       )}
 
       {showSpawn && (
