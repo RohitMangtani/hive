@@ -404,8 +404,13 @@ export class ProcessDiscovery {
     auditCtx: Record<string, unknown>,
   ): void {
     if (!cachedPath) {
-      // No JSONL at all — keep last known status
-      this.checkTransition(id, tty, existing.status, "no cachedPath, keep last", auditCtx);
+      // Non-Claude workers (Codex, etc.) never have JSONL — use CPU/PTY signals.
+      // Claude workers can transiently lack JSONL during startup — keep last.
+      if (existing.model && existing.model !== "claude") {
+        this.runCpuOnlyAnalysis(id, existing, tty, auditCtx);
+      } else {
+        this.checkTransition(id, tty, existing.status, "no cachedPath, keep last", auditCtx);
+      }
       return;
     }
 
@@ -611,6 +616,60 @@ export class ProcessDiscovery {
           }
         }
       }
+    }
+  }
+
+  /**
+   * CPU/PTY-only status detection for non-Claude workers (Codex, etc.)
+   * that have no JSONL session files or hook telemetry.
+   * Reuses the same hysteresis and cooldown patterns as JSONL analysis.
+   */
+  private runCpuOnlyAnalysis(
+    id: string,
+    existing: WorkerState,
+    tty: string,
+    auditCtx: Record<string, unknown>,
+  ): void {
+    const cpuPct = this.getCpuForPid(existing.pid);
+    const ptyDelta = this.getPtyOutputDelta(existing.pid);
+    const ctx = { ...auditCtx, cpuPct, ptyDelta, model: existing.model };
+
+    if (cpuPct > 25) {
+      // High CPU — likely working. Require 2 consecutive ticks (hysteresis).
+      const activeCount = (this.consecutiveActiveChecks.get(id) || 0) + 1;
+      this.consecutiveActiveChecks.set(id, activeCount);
+      if (activeCount >= 2) {
+        existing.status = "working";
+        existing.currentAction = "Working...";
+        existing.lastActionAt = Date.now();
+        this.lastConfirmedWorking.set(id, Date.now());
+        this.consecutiveIdleChecks.set(id, 0);
+        this.consecutiveActiveChecks.set(id, 0);
+        this.checkTransition(id, tty, "working", `CPU-only: ${cpuPct.toFixed(1)}% (${existing.model})`, ctx);
+      } else {
+        this.checkTransition(id, tty, existing.status, `CPU active unconfirmed (${activeCount}/2, ${existing.model})`, ctx);
+      }
+    } else if (existing.status === "working") {
+      // Was working, CPU dropped — apply cooldown before going idle
+      const lastWorking = this.lastConfirmedWorking.get(id) || 0;
+      const cooldown = Date.now() - lastWorking;
+      if (cooldown < 25_000) {
+        this.checkTransition(id, tty, "working", `CPU-only cooldown (${Math.round(cooldown / 1000)}s/25s, ${existing.model})`, ctx);
+      } else {
+        const idleCount = (this.consecutiveIdleChecks.get(id) || 0) + 1;
+        this.consecutiveIdleChecks.set(id, idleCount);
+        if (idleCount >= 2) {
+          existing.status = "idle";
+          existing.currentAction = null;
+          this.checkTransition(id, tty, "idle", `CPU-only idle confirmed (cpu=${cpuPct.toFixed(1)}%, ${existing.model})`, ctx);
+        } else {
+          this.checkTransition(id, tty, "working", `CPU-only idle hysteresis (${idleCount}/2, ${existing.model})`, ctx);
+        }
+      }
+    } else {
+      // Already idle, low CPU — stay idle
+      this.consecutiveActiveChecks.set(id, 0);
+      this.checkTransition(id, tty, existing.status, `CPU-only steady (cpu=${cpuPct.toFixed(1)}%, ${existing.model})`, ctx);
     }
   }
 
