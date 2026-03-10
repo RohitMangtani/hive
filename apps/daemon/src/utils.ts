@@ -19,6 +19,28 @@ export function readTail(path: string, bytes: number): string {
 }
 
 /**
+ * Recognize common Bash commands and return a human-readable description.
+ * Falls back to the raw command if no pattern matches.
+ */
+export function describeBashCommand(cmd: string): string {
+  if (!cmd) return "Running command";
+  const c = cmd.toLowerCase();
+  if (c.includes("npm run build") || c.includes("next build") || c.includes("tsc") && !c.includes("--noEmit")) return "Building project";
+  if (c.includes("tsc") && c.includes("--noEmit")) return "Type-checking";
+  if (c.includes("npm run test") || c.includes("jest") || c.includes("vitest") || c.includes("npm test")) return "Running tests";
+  if (c.includes("git push")) return "Pushing to remote";
+  if (c.includes("git commit")) return "Committing changes";
+  if (c.includes("git diff")) return "Reviewing changes";
+  if (c.includes("git status")) return "Checking git status";
+  if (c.includes("git log")) return "Reading git history";
+  if (c.includes("git add")) return "Staging changes";
+  if (c.includes("npm install") || c.includes("pnpm install") || c.includes("yarn install")) return "Installing dependencies";
+  if (c.includes("curl") && c.includes("/api/")) return "Calling API";
+  if (c.includes("npx next build")) return "Building Next.js";
+  return cmd; // Raw command as fallback
+}
+
+/**
  * Convert a tool name + input into a human-readable action description.
  * Used by telemetry, session streaming, and discovery for dashboard display.
  */
@@ -34,9 +56,9 @@ export function describeAction(
 
   switch (toolName) {
     case "Bash":
-      return (toolInput.description as string) ||
-        truncate(toolInput.command as string, 60) ||
-        "Running command";
+      if (toolInput.description) return toolInput.description as string;
+      if (toolInput.command) return describeBashCommand(truncate(toolInput.command as string, 60));
+      return "Running command";
     case "Edit":
       return fileName ? `Editing ${fileName}` : "Editing file";
     case "Write":

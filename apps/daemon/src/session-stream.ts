@@ -1,7 +1,7 @@
 import { readFileSync, statSync, readdirSync, watch, type FSWatcher } from "fs";
 import { basename, join } from "path";
 import type { ChatEntry } from "./types.js";
-import { describeAction, truncate } from "./utils.js";
+import { describeAction, describeBashCommand, truncate } from "./utils.js";
 
 const MAX_HISTORY = 50;
 const POLL_INTERVAL = 500; // fallback poll if fs.watch misses events
@@ -281,7 +281,7 @@ function describeCodexAction(name: string, input?: Record<string, unknown>): str
   if (!input) return name;
   switch (name) {
     case "exec_command":
-      return truncate(input.cmd as string, 60) || "Running command";
+      return input.cmd ? describeBashCommand(truncate(input.cmd as string, 60)) : "Running command";
     case "read_file":
       return input.path ? `Reading ${basename(input.path as string)}` : "Reading file";
     case "write_file":

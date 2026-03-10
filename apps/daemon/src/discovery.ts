@@ -4,7 +4,7 @@ import { basename, dirname, join } from "path";
 import type { TelemetryReceiver } from "./telemetry.js";
 import type { SessionStreamer } from "./session-stream.js";
 import type { WorkerState } from "./types.js";
-import { readTail } from "./utils.js";
+import { readTail, describeBashCommand } from "./utils.js";
 
 /** Quadrant Audit — logs every status transition with full decision context */
 interface AuditEntry {
@@ -1336,7 +1336,9 @@ export class ProcessDiscovery {
 
           switch (toolName) {
             case "Bash":
-              return descMatch ? descMatch[1] : cmdMatch ? cmdMatch[1] : "Running command";
+              if (descMatch) return descMatch[1];
+              if (cmdMatch) return describeBashCommand(cmdMatch[1]);
+              return "Running command";
             case "Edit":
               return fileMatch ? `Editing ${basename(fileMatch[1])}` : "Editing file";
             case "Write":
@@ -1369,7 +1371,7 @@ export class ProcessDiscovery {
         const cmdMatch = line.match(/"cmd"\s*(?::|\\"):\s*(?:\\")([^"\\]{1,60})/);
         switch (name) {
           case "exec_command":
-            return cmdMatch ? cmdMatch[1] : "Running command";
+            return cmdMatch ? describeBashCommand(cmdMatch[1]) : "Running command";
           case "read_file":
             return "Reading file";
           case "write_file":
