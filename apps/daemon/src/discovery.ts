@@ -829,9 +829,14 @@ export class ProcessDiscovery {
           sessionIds.push(taskMatch[1]);
         }
         // Direct JSONL file detection — most reliable session file source
+        // Supports both Claude (.claude/projects/*/UUID.jsonl) and Codex (.codex/sessions/*/rollout-*.jsonl)
         const jsonlMatch = lines[i].match(/^n(.*\.claude\/projects\/[^/]+\/[0-9a-f-]{36}\.jsonl)$/);
         if (jsonlMatch && !jsonlFile) {
           jsonlFile = jsonlMatch[1];
+        }
+        const codexJsonlMatch = lines[i].match(/^n(.*\.codex\/sessions\/.*\.jsonl)$/);
+        if (codexJsonlMatch && !jsonlFile) {
+          jsonlFile = codexJsonlMatch[1];
         }
       }
 
@@ -1126,7 +1131,9 @@ export class ProcessDiscovery {
       // Long-running Bash commands flood the JSONL with progress entries.
       // If 50KB yields zero real entries after filtering, read a bigger chunk
       // to find the actual conversation state buried underneath the noise.
-      const hasRealEntry = /"type"\s*:\s*"(assistant|user)"/.test(tail);
+      const hasRealEntry = /"type"\s*:\s*"(assistant|user)"/.test(tail) ||
+        /"type"\s*:\s*"(user_message|agent_message)"/.test(tail) ||
+        /"role"\s*:\s*"assistant"/.test(tail);
       if (!hasRealEntry) {
         tail = readTail(filePath, 500_000);
       }
@@ -1159,11 +1166,16 @@ export class ProcessDiscovery {
       // bookkeeping that Claude Code writes periodically even while idle.
       // They flood the scan window AND their writes keep file mtime fresh,
       // which causes phantom green via the 120s grace period.
+      // Also filters Codex noise: token_count, session_meta, reasoning.
       const isNoiseLine = (l: string) =>
         l.includes('"type":"progress"') ||
         l.includes('"type":"system"') ||
         l.includes('"type":"file-history-snapshot"') ||
-        l.includes('"type":"hook_progress"');
+        l.includes('"type":"hook_progress"') ||
+        l.includes('"type":"token_count"') ||
+        l.includes('"type":"session_meta"') ||
+        l.includes('"type":"reasoning"') ||
+        l.includes('"type":"turn_context"');
       const lines = rawLines.filter(l => !isNoiseLine(l));
 
       // Check if the file's mtime freshness is from noise writes (progress,
@@ -1179,24 +1191,33 @@ export class ProcessDiscovery {
       }
 
       // Extract last human direction — the most recent user-typed message.
-      // Human messages have "type":"user" with content as a plain string.
+      // Claude: "type":"user" with content as a plain string.
+      // Codex: "type":"user_message" in event_msg with "message" field.
       // Tool results also have "type":"user" but content is an array.
-      // Scan backward through lines (not just filtered 20) to find the last one.
       for (let i = lines.length - 1; i >= Math.max(0, lines.length - 80); i--) {
         const line = lines[i];
+
+        // Codex user message: {"type":"event_msg","payload":{"type":"user_message","message":"..."}}
+        if (line.includes('"user_message"')) {
+          const msgMatch = line.match(/"message"\s*:\s*"([^"]{3,})"/);
+          if (msgMatch) {
+            let direction = msgMatch[1].replace(/\\n/g, " ").replace(/\\"/g, '"').trim();
+            if (direction.length > 60) direction = direction.slice(0, 57) + "...";
+            result.lastDirection = direction;
+            break;
+          }
+        }
+
+        // Claude user message
         if (!line.includes('"type":"user"') && !line.includes('"type": "user"')) continue;
-        // Skip tool_result entries (content is an array with tool_result blocks)
         if (line.includes('"tool_result"')) continue;
-        // Extract the content string — human messages have "content":"some text"
         const contentMatch = line.match(/"content"\s*:\s*"([^"]{3,})"/);
         if (contentMatch) {
           let direction = contentMatch[1]
             .replace(/\\n/g, " ")
             .replace(/\\"/g, '"')
             .trim();
-          // Skip session continuation boilerplate
           if (direction.startsWith("This session is being continued")) continue;
-          // Truncate for display — 2 lines at 10px ≈ 60 chars
           if (direction.length > 60) direction = direction.slice(0, 57) + "...";
           result.lastDirection = direction;
           break;
@@ -1222,31 +1243,35 @@ export class ProcessDiscovery {
       for (let i = lines.length - 1; i >= Math.max(0, lines.length - 20); i--) {
         const line = lines[i];
 
-        // Pattern 1: tool in flight (tool_use without tool_result after it)
-        if (line.includes('"tool_result"')) {
+        // Pattern 1: tool in flight (tool_use/function_call without result after it)
+        // Claude: "tool_result" | Codex: "function_call_output"
+        if (line.includes('"tool_result"') || line.includes('"function_call_output"')) {
           foundAnyPattern = true;
-          // Tool result = user input to Claude. Always counts as "user" input
-          // regardless of whether we already saw an assistant message above.
-          // Pattern: tool_result → assistant (text) means Claude received input
-          // and responded. If the file is fresh, Claude may still be mid-turn.
           lastUser = true;
           break;
         }
-        // Only treat tool_use as "in flight" if no assistant response came AFTER it.
-        // Once we've seen an assistant text response (lastAssistant=true), any tool_use
-        // before it is historical — the agent already responded and is done.
+        // Claude: tool_use in assistant message | Codex: function_call response_item
         if (!lastAssistant && line.includes('"tool_use"') && line.includes('"assistant"')) {
           result.status = "working";
-          result.highConfidence = true; // tool_use at tail = definitive working
+          result.highConfidence = true;
+          return result;
+        }
+        if (!lastAssistant && line.includes('"function_call"') && !line.includes('"function_call_output"')) {
+          result.status = "working";
+          result.highConfidence = true;
           return result;
         }
 
         // Pattern 2: thinking — track last message type
+        // Claude: "type":"user" / "type":"assistant"
+        // Codex: "type":"user_message" (event_msg) / "role":"assistant" (response_item)
         if (!lastUser && !lastAssistant) {
-          if (line.includes('"type":"user"') || line.includes('"type": "user"')) {
+          if (line.includes('"type":"user"') || line.includes('"type": "user"') ||
+              line.includes('"type":"user_message"') || line.includes('"type":"event_msg"')) {
             lastUser = true;
             foundAnyPattern = true;
-          } else if (line.includes('"type":"assistant"') || line.includes('"type": "assistant"')) {
+          } else if (line.includes('"type":"assistant"') || line.includes('"type": "assistant"') ||
+                     (line.includes('"role":"assistant"') && line.includes('"response_item"'))) {
             lastAssistant = true;
             foundAnyPattern = true;
           }
@@ -1299,44 +1324,64 @@ export class ProcessDiscovery {
   /** Try to extract a human-readable action from a JSONL line */
   private parseActionFromLine(line: string): string | null {
     try {
-      // Quick checks to avoid parsing irrelevant lines
-      if (!line.includes("tool_use")) return null;
+      // ── Claude format: tool_use blocks ──
+      if (line.includes("tool_use")) {
+        const toolMatch = line.match(/"tool_use"[^}]*?"name"\s*:\s*"([^"]+)"/);
+        if (toolMatch) {
+          const toolName = toolMatch[1];
+          const fileMatch = line.match(/"file_path"\s*:\s*"([^"]+)"/);
+          const descMatch = line.match(/"description"\s*:\s*"([^"]{1,60})"/);
+          const cmdMatch = line.match(/"command"\s*:\s*"([^"]{1,60})"/);
+          const patternMatch = line.match(/"pattern"\s*:\s*"([^"]{1,30})"/);
 
-      // JSONL tool_use format: {"type":"tool_use","name":"Bash","input":{...}}
-      // Match "name" that appears after "tool_use" context
-      const toolMatch = line.match(/"tool_use"[^}]*?"name"\s*:\s*"([^"]+)"/);
-      if (!toolMatch) return null;
-
-      const toolName = toolMatch[1];
-      const fileMatch = line.match(/"file_path"\s*:\s*"([^"]+)"/);
-      const descMatch = line.match(/"description"\s*:\s*"([^"]{1,60})"/);
-      const cmdMatch = line.match(/"command"\s*:\s*"([^"]{1,60})"/);
-      const patternMatch = line.match(/"pattern"\s*:\s*"([^"]{1,30})"/);
-
-      switch (toolName) {
-        case "Bash":
-          return descMatch ? descMatch[1] : cmdMatch ? cmdMatch[1] : "Running command";
-        case "Edit":
-          return fileMatch ? `Editing ${basename(fileMatch[1])}` : "Editing file";
-        case "Write":
-          return fileMatch ? `Writing ${basename(fileMatch[1])}` : "Writing file";
-        case "Read":
-          return fileMatch ? `Reading ${basename(fileMatch[1])}` : "Reading file";
-        case "Grep":
-          return patternMatch ? `Searching "${patternMatch[1]}"` : "Searching code";
-        case "Glob":
-          return patternMatch ? `Finding ${patternMatch[1]}` : "Finding files";
-        case "WebFetch":
-          return "Fetching web page";
-        case "WebSearch":
-          return "Searching web";
-        case "Task":
-          return "Running subagent";
-        case "AskUserQuestion":
-          return "Asking you a question";
-        default:
-          return toolName.replace(/^mcp__\w+__/, "");
+          switch (toolName) {
+            case "Bash":
+              return descMatch ? descMatch[1] : cmdMatch ? cmdMatch[1] : "Running command";
+            case "Edit":
+              return fileMatch ? `Editing ${basename(fileMatch[1])}` : "Editing file";
+            case "Write":
+              return fileMatch ? `Writing ${basename(fileMatch[1])}` : "Writing file";
+            case "Read":
+              return fileMatch ? `Reading ${basename(fileMatch[1])}` : "Reading file";
+            case "Grep":
+              return patternMatch ? `Searching "${patternMatch[1]}"` : "Searching code";
+            case "Glob":
+              return patternMatch ? `Finding ${patternMatch[1]}` : "Finding files";
+            case "WebFetch":
+              return "Fetching web page";
+            case "WebSearch":
+              return "Searching web";
+            case "Task":
+              return "Running subagent";
+            case "AskUserQuestion":
+              return "Asking you a question";
+            default:
+              return toolName.replace(/^mcp__\w+__/, "");
+          }
+        }
       }
+
+      // ── Codex format: function_call in response_item ──
+      if (line.includes('"function_call"') && !line.includes('"function_call_output"')) {
+        const nameMatch = line.match(/"function_call"[^}]*?"name"\s*:\s*"([^"]+)"/);
+        if (!nameMatch) return null;
+        const name = nameMatch[1];
+        const cmdMatch = line.match(/"cmd"\s*(?::|\\"):\s*(?:\\")([^"\\]{1,60})/);
+        switch (name) {
+          case "exec_command":
+            return cmdMatch ? cmdMatch[1] : "Running command";
+          case "read_file":
+            return "Reading file";
+          case "write_file":
+            return "Writing file";
+          case "list_directory":
+            return "Listing files";
+          default:
+            return name;
+        }
+      }
+
+      return null;
     } catch {
       return null;
     }

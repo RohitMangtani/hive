@@ -1,5 +1,5 @@
 import { readFileSync, statSync, readdirSync, watch, type FSWatcher } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 import type { ChatEntry } from "./types.js";
 import { describeAction, truncate } from "./utils.js";
 
@@ -199,12 +199,13 @@ export class SessionStreamer {
   }
 }
 
-/** Parse a single JSONL line into chat entries */
+/** Parse a single JSONL line into chat entries (Claude or Codex format) */
 function parseLine(line: string): ChatEntry[] | null {
   try {
     const obj = JSON.parse(line);
     const type = obj.type as string;
 
+    // ── Claude format ──
     if (type === "user") {
       const text = extractText(obj.message?.content);
       if (text) return [{ role: "user", text }];
@@ -230,9 +231,65 @@ function parseLine(line: string): ChatEntry[] | null {
       return entries.length > 0 ? entries : null;
     }
 
+    // ── Codex format ──
+    // Codex wraps everything in {type, payload}
+    const p = obj.payload;
+    if (!p) return null;
+
+    // User message: {type:"event_msg", payload:{type:"user_message", message:"..."}}
+    if (type === "event_msg" && p.type === "user_message" && p.message) {
+      const text = typeof p.message === "string" ? p.message.trim() : null;
+      if (text) return [{ role: "user", text }];
+    }
+
+    if (type === "response_item") {
+      // Assistant text: {type:"response_item", payload:{role:"assistant", content:[{type:"output_text", text:"..."}]}}
+      if (p.role === "assistant" && p.content) {
+        const entries: ChatEntry[] = [];
+        if (Array.isArray(p.content)) {
+          for (const block of p.content) {
+            if (block.type === "output_text" && block.text?.trim()) {
+              entries.push({ role: "agent", text: block.text.trim() });
+            }
+          }
+        }
+        return entries.length > 0 ? entries : null;
+      }
+
+      // Tool call: {type:"response_item", payload:{type:"function_call", name:"exec_command", arguments:"..."}}
+      if (p.type === "function_call" && p.name) {
+        let input: Record<string, unknown> | undefined;
+        try { input = JSON.parse(p.arguments || "{}"); } catch { /* ignore */ }
+        const desc = describeCodexAction(p.name, input);
+        return [{ role: "tool", text: desc }];
+      }
+
+      // Tool result: {type:"response_item", payload:{type:"function_call_output", output:"..."}}
+      if (p.type === "function_call_output") {
+        return null; // Skip tool outputs (same as Claude — only show call descriptions)
+      }
+    }
+
     return null;
   } catch {
     return null;
+  }
+}
+
+/** Describe a Codex tool call for display */
+function describeCodexAction(name: string, input?: Record<string, unknown>): string {
+  if (!input) return name;
+  switch (name) {
+    case "exec_command":
+      return truncate(input.cmd as string, 60) || "Running command";
+    case "read_file":
+      return input.path ? `Reading ${basename(input.path as string)}` : "Reading file";
+    case "write_file":
+      return input.path ? `Writing ${basename(input.path as string)}` : "Writing file";
+    case "list_directory":
+      return input.path ? `Listing ${basename(input.path as string)}` : "Listing files";
+    default:
+      return name;
   }
 }
 
