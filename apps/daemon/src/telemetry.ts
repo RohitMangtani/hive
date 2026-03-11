@@ -478,7 +478,7 @@ export class TelemetryReceiver {
     return lines.join("\n");
   }
 
-  private writeLearning(project: string, lesson: string): void {
+  writeLearning(project: string, lesson: string): void {
     if (!project) return;
     const claudeDir = join(project, ".claude");
     const learningFile = join(claudeDir, "hive-learnings.md");
@@ -596,21 +596,49 @@ export class TelemetryReceiver {
     return Array.from(this.workers.values());
   }
 
+  // Sticky quadrant assignments: worker_id → slot (1-4).
+  // Persists across scans. When a worker dies, its slot frees up.
+  // New workers get the lowest available slot.
+  private quadrantAssignments = new Map<string, number>();
+
   writeWorkersFile(): void {
     const workers = this.getAll().sort((a, b) => a.startedAt - b.startedAt);
+
+    // Remove dead workers from assignments
+    for (const id of this.quadrantAssignments.keys()) {
+      if (!this.workers.has(id)) this.quadrantAssignments.delete(id);
+    }
+
+    // Assign slots to new workers (lowest available)
+    const usedSlots = new Set(this.quadrantAssignments.values());
+    for (const w of workers) {
+      if (this.quadrantAssignments.has(w.id)) continue;
+      for (let slot = 1; slot <= 4; slot++) {
+        if (!usedSlots.has(slot)) {
+          this.quadrantAssignments.set(w.id, slot);
+          usedSlots.add(slot);
+          break;
+        }
+      }
+    }
+
     const slots: Array<{
       quadrant: number; id: string; pid: number; tty: string | undefined;
       project: string; projectName: string; status: string;
       currentAction: string | null; lastAction: string; startedAt: number;
+      model: string;
     }> = [];
-    for (let i = 0; i < workers.length && i < 4; i++) {
-      const w = workers[i];
+    for (const w of workers) {
+      const q = this.quadrantAssignments.get(w.id);
+      if (!q) continue; // more than 4 workers
       slots.push({
-        quadrant: i + 1, id: w.id, pid: w.pid, tty: w.tty,
+        quadrant: q, id: w.id, pid: w.pid, tty: w.tty,
         project: w.project, projectName: w.projectName, status: w.status,
         currentAction: w.currentAction, lastAction: w.lastAction, startedAt: w.startedAt,
+        model: w.model || "claude",
       });
     }
+    slots.sort((a, b) => a.quadrant - b.quadrant);
     try {
       const hiveDir = join(HOME, ".hive");
       if (!existsSync(hiveDir)) mkdirSync(hiveDir, { recursive: true });
@@ -1331,6 +1359,12 @@ export class TelemetryReceiver {
       }
     }
 
+    // Persist quadrant assignments so slots are sticky across daemon restarts
+    const quadrantAssignments: Record<string, number> = {};
+    for (const [id, q] of this.quadrantAssignments) {
+      quadrantAssignments[id] = q;
+    }
+
     return {
       savedAt: Date.now(),
       workers,
@@ -1340,6 +1374,7 @@ export class TelemetryReceiver {
       dispatchedTasks,
       workflowHandoffs,
       ttySessionMap,
+      quadrantAssignments,
     };
   }
 
@@ -1383,6 +1418,14 @@ export class TelemetryReceiver {
         this.pendingTtyRegistrations.set(tty, sessionId);
       }
       console.log(`[state-store] Restored ${Object.keys(snapshot.ttySessionMap).length} TTY→session mapping(s)`);
+    }
+
+    // Restore sticky quadrant assignments so slots are preserved across restarts
+    if (snapshot.quadrantAssignments) {
+      for (const [id, q] of Object.entries(snapshot.quadrantAssignments)) {
+        this.quadrantAssignments.set(id, q);
+      }
+      console.log(`[state-store] Restored ${Object.keys(snapshot.quadrantAssignments).length} quadrant assignment(s)`);
     }
 
     console.log(`[state-store] Restored ${workerCount} worker(s), ${Object.keys(snapshot.messageQueue).length} queue(s), ${snapshot.locks.length} lock(s)`);

@@ -205,6 +205,10 @@ export class ProcessDiscovery {
           if (!sessionFile) {
             sessionFile = this.findSessionFileByStartTime(proc.cwd, proc.startedAt, claimedFiles);
           }
+          // Codex fallback: search ~/.codex/sessions/ by birthtime
+          if (!sessionFile && proc.model === "codex") {
+            sessionFile = this.findCodexSessionFile(proc.pid, proc.startedAt);
+          }
         }
 
         // Stale-file recovery: when context compaction creates a new session,
@@ -373,12 +377,22 @@ export class ProcessDiscovery {
       }
     }
 
-    // Remove dead processes
+    // Remove dead processes — both discovered and state-restored workers.
+    // State-restored workers (from importState) aren't in discoveredPids,
+    // so we also scan the telemetry map for any discovered_* workers whose
+    // PIDs are no longer in the ps output.
     for (const pid of this.discoveredPids) {
       if (!alivePids.has(pid)) {
         this.telemetry.removeWorker(`discovered_${pid}`);
         this.discoveredPids.delete(pid);
         this.prevPtyOffset.delete(pid);
+      }
+    }
+    for (const w of this.telemetry.getAll()) {
+      if (!w.id.startsWith("discovered_")) continue;
+      const pid = parseInt(w.id.replace("discovered_", ""), 10);
+      if (!isNaN(pid) && !alivePids.has(pid) && !this.discoveredPids.has(pid)) {
+        this.telemetry.removeWorker(w.id);
       }
     }
   }
@@ -404,9 +418,17 @@ export class ProcessDiscovery {
     auditCtx: Record<string, unknown>,
   ): void {
     if (!cachedPath) {
-      // Non-Claude workers (Codex, etc.) never have JSONL — use CPU/PTY signals.
-      // Claude workers can transiently lack JSONL during startup — keep last.
+      // No cached JSONL path. For non-Claude workers (Codex), try finding their
+      // session file before falling back to CPU-only. Codex stores JSONL at
+      // ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl — lsof may have missed it.
       if (existing.model && existing.model !== "claude") {
+        const codexFile = this.findCodexSessionFile(existing.pid, existing.startedAt);
+        if (codexFile) {
+          this.streamer.setSessionFile(id, codexFile);
+          // Fall through to normal JSONL analysis with the found file
+          this.runJsonlAnalysis(id, existing, tty, codexFile, Date.now(), hookAge, auditCtx);
+          return;
+        }
         this.runCpuOnlyAnalysis(id, existing, tty, auditCtx);
       } else {
         this.checkTransition(id, tty, existing.status, "no cachedPath, keep last", auditCtx);
@@ -570,9 +592,13 @@ export class ProcessDiscovery {
         // keep green. Covers the gap where Claude is generating text after
         // its last tool call (no hooks fire during text generation).
         // Was 10s which was too aggressive — complex responses take 15-30s.
+        // Skip for non-Claude workers: they have no hooks, so JSONL is the
+        // definitive source. The cooldown bridges hook gaps that don't exist
+        // for Codex. Without this skip, Codex stays green 25s after finishing.
         const lastWorking = this.lastConfirmedWorking.get(id) || 0;
         const workingCooldown = Date.now() - lastWorking;
-        if (workingCooldown < 25_000 && existing.status === "working") {
+        const hasHooks = existing.model === "claude" || !existing.model;
+        if (workingCooldown < 25_000 && existing.status === "working" && hasHooks) {
           existing.currentAction = ctx.latestAction || "Thinking...";
           existing.lastAction = ctx.latestAction || existing.lastAction;
           existing.lastActionAt = Date.now();
@@ -718,6 +744,60 @@ export class ProcessDiscovery {
       return offset - prev;
     } catch {
       return 0;
+    }
+  }
+
+  /**
+   * Find a Codex session JSONL file by scanning ~/.codex/sessions/.
+   * Codex stores session files at ~/.codex/sessions/YYYY/MM/DD/rollout-{datetime}-{uuid}.jsonl.
+   * Falls back to most recently modified file if birthtime matching fails.
+   */
+  private findCodexSessionFile(pid: number, startedAt: number): string | null {
+    const codexDir = join(HOME, ".codex", "sessions");
+    try {
+      let bestFile: string | null = null;
+      let bestMtime = 0;
+      let bestBirthtimeDiff = Infinity;
+
+      // Walk YYYY/MM/DD subdirectories
+      for (const year of readdirSync(codexDir)) {
+        const yearDir = join(codexDir, year);
+        try {
+          for (const month of readdirSync(yearDir)) {
+            const monthDir = join(yearDir, month);
+            try {
+              for (const day of readdirSync(monthDir)) {
+                const dayDir = join(monthDir, day);
+                try {
+                  for (const file of readdirSync(dayDir)) {
+                    if (!file.endsWith(".jsonl")) continue;
+                    const fullPath = join(dayDir, file);
+                    try {
+                      const stat = statSync(fullPath);
+                      // Birthtime matching: JSONL created close to process start
+                      const birthtimeDiff = Math.abs(stat.birthtimeMs - startedAt);
+                      if (birthtimeDiff < 60_000 && birthtimeDiff < bestBirthtimeDiff) {
+                        bestBirthtimeDiff = birthtimeDiff;
+                        bestFile = fullPath;
+                        bestMtime = stat.mtimeMs;
+                      }
+                      // Fallback: most recently modified
+                      if (!bestFile && stat.mtimeMs > bestMtime) {
+                        bestMtime = stat.mtimeMs;
+                        bestFile = fullPath;
+                      }
+                    } catch { /* skip */ }
+                  }
+                } catch { /* skip */ }
+              }
+            } catch { /* skip */ }
+          }
+        } catch { /* skip */ }
+      }
+
+      return bestFile;
+    } catch {
+      return null;
     }
   }
 

@@ -30,6 +30,9 @@ export interface DaemonSnapshot {
   /** TTY → session_id mapping from register-tty. Survives daemon restarts so
    *  session file assignment is deterministic without birthtime heuristics. */
   ttySessionMap?: Record<string, string>;
+  /** Sticky quadrant assignments (workerId → slot 1-4). Survives daemon restarts
+   *  so agents keep their physical terminal position across restarts. */
+  quadrantAssignments?: Record<string, number>;
 }
 
 export class StateStore {
