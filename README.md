@@ -1,6 +1,6 @@
 # Hive
 
-One screen for all your AI agents. Find My iPhone, but for Claude Code.
+One screen for all your AI agents. Find My iPhone, but for terminal agents.
 
 ```
   Your terminals                     Your phone
