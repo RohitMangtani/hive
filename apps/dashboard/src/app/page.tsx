@@ -111,7 +111,7 @@ export default function Home() {
     if (savedAgent) setSelectedId(savedAgent);
   }, []);
 
-  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect } = useHive(daemonUrl);
+  const { connected, workers, chatEntries, send, subscribeTo, isAdmin, reconnect } = useHive(daemonUrl);
   const [authError, setAuthError] = useState(false);
 
   useEffect(() => {
@@ -333,12 +333,7 @@ export default function Home() {
             } catch { /* quota exceeded, non-critical */ }
           }}
           onSend={(msg) => {
-            const ok = send({ type: "message", workerId: selectedEntry.worker.id, content: msg });
-            if (ok) {
-              const normalized = msg.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
-              addOptimisticEntry(selectedEntry.worker.id, normalized);
-            }
-            return ok;
+            return send({ type: "message", workerId: selectedEntry.worker.id, content: msg });
           }}
           onDismiss={() => {
             setChatExpanded(false);
