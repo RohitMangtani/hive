@@ -316,7 +316,7 @@ Daemon (Node.js, port 3001 + 3002)
 ├── Task queue    — global work queue, auto-dispatches to idle agents
 ├── Coordination  — file locks, scratchpad, conflict detection, learnings
 ├── API routes    — REST endpoints for all coordination features
-└── WebSocket     — pushes live state to dashboard every second
+└── WebSocket     — pushes live state to dashboard every 3 seconds
 
 Dashboard (Next.js, port 3000 — installable as PWA)
 ├── 2×2 grid      — stoplight status cards matching terminal layout
@@ -444,7 +444,7 @@ The project uses npm workspaces with Turbo for build orchestration. The daemon a
 
 ## How This Was Built
 
-This was built using the agents it manages. Four Claude Code instances iterated on the daemon and dashboard simultaneously while a human directed architecture and resolved conflicts. The compound learning system was tested in production from day one, with each session's lessons feeding the next.
+This was built using the agents it manages. Four AI agents, a mix of Claude Code and Codex, iterated on the daemon and dashboard simultaneously while a human directed architecture and resolved conflicts. The compound learning system was tested in production from day one, with each session's lessons feeding the next.
 
 ## License
 
