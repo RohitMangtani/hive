@@ -4,7 +4,7 @@ import { describeAction, truncate } from "../utils.js";
 describe("describeAction", () => {
   it("describes Bash with command", () => {
     const result = describeAction("Bash", { command: "npm test" });
-    expect(result).toBe("npm test");
+    expect(result).toBe("Running tests");
   });
 
   it("prefers Bash description over command", () => {

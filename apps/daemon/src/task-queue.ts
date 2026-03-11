@@ -14,8 +14,16 @@ export interface QueuedTask {
   workflowId?: string;
 }
 
+export interface RunningTask {
+  task: QueuedTask;
+  workerId: string;
+  startedAt: number;
+}
+
 export class TaskQueue {
   private tasks: QueuedTask[] = [];
+  private runningTasks = new Map<string, RunningTask>();
+  private runningByWorker = new Map<string, string>();
   private completedIds = new Set<string>();
   private nextId = 1;
 
@@ -29,14 +37,23 @@ export class TaskQueue {
         const data = JSON.parse(readFileSync(QUEUE_PATH, "utf-8")) as {
           tasks: QueuedTask[];
           nextId: number;
+          runningTasks?: RunningTask[];
           completedIds?: string[];
         };
         this.tasks = data.tasks || [];
         this.nextId = data.nextId || 1;
+        this.runningTasks.clear();
+        this.runningByWorker.clear();
+        for (const running of data.runningTasks || []) {
+          this.runningTasks.set(running.task.id, running);
+          this.runningByWorker.set(running.workerId, running.task.id);
+        }
         for (const id of data.completedIds || []) this.completedIds.add(id);
       }
     } catch {
       this.tasks = [];
+      this.runningTasks.clear();
+      this.runningByWorker.clear();
     }
   }
 
@@ -47,6 +64,7 @@ export class TaskQueue {
       writeFileSync(QUEUE_PATH, JSON.stringify({
         tasks: this.tasks,
         nextId: this.nextId,
+        runningTasks: [...this.runningTasks.values()],
         completedIds: [...this.completedIds].slice(-100),
       }, null, 2));
     } catch { /* best-effort */ }
@@ -77,13 +95,51 @@ export class TaskQueue {
     return true;
   }
 
-  markCompleted(taskId: string): void {
+  markRunning(taskId: string, workerId: string): RunningTask | undefined {
+    const idx = this.tasks.findIndex(t => t.id === taskId);
+    if (idx === -1) return undefined;
+    const [task] = this.tasks.splice(idx, 1);
+    const running: RunningTask = { task, workerId, startedAt: Date.now() };
+    this.runningTasks.set(taskId, running);
+    this.runningByWorker.set(workerId, taskId);
+    this.save();
+    return running;
+  }
+
+  markCompleted(taskId: string): RunningTask | undefined {
+    const running = this.runningTasks.get(taskId);
+    if (running) {
+      this.runningTasks.delete(taskId);
+      this.runningByWorker.delete(running.workerId);
+    }
     this.completedIds.add(taskId);
     this.save();
+    return running;
   }
 
   isCompleted(taskId: string): boolean {
     return this.completedIds.has(taskId);
+  }
+
+  requeueRunningTask(workerId: string): QueuedTask | undefined {
+    const taskId = this.runningByWorker.get(workerId);
+    if (!taskId) return undefined;
+    const running = this.runningTasks.get(taskId);
+    if (!running) {
+      this.runningByWorker.delete(workerId);
+      return undefined;
+    }
+    this.runningTasks.delete(taskId);
+    this.runningByWorker.delete(workerId);
+    this.tasks.push(running.task);
+    this.tasks.sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
+    this.save();
+    return running.task;
+  }
+
+  getRunningTaskForWorker(workerId: string): RunningTask | undefined {
+    const taskId = this.runningByWorker.get(workerId);
+    return taskId ? this.runningTasks.get(taskId) : undefined;
   }
 
   getAll(): QueuedTask[] {

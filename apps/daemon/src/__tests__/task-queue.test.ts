@@ -54,6 +54,8 @@ describe("TaskQueue", () => {
 
   it("tracks completed task IDs", () => {
     expect(queue.isCompleted("q1")).toBe(false);
+    queue.push("Task");
+    queue.markRunning("q1", "w1");
     queue.markCompleted("q1");
     expect(queue.isCompleted("q1")).toBe(true);
   });
@@ -62,5 +64,31 @@ describe("TaskQueue", () => {
     const t1 = queue.push("Step 1");
     const t2 = queue.push("Step 2", undefined, 10, t1.id);
     expect(t2.blockedBy).toBe(t1.id);
+  });
+
+  it("moves dispatched tasks into a running set until completion", () => {
+    const task = queue.push("Step 1");
+    const running = queue.markRunning(task.id, "w1");
+
+    expect(running?.task.id).toBe(task.id);
+    expect(queue.getAll()).toHaveLength(0);
+    expect(queue.getRunningTaskForWorker("w1")?.task.id).toBe(task.id);
+    expect(queue.isCompleted(task.id)).toBe(false);
+
+    queue.markCompleted(task.id);
+
+    expect(queue.getRunningTaskForWorker("w1")).toBeUndefined();
+    expect(queue.isCompleted(task.id)).toBe(true);
+  });
+
+  it("can requeue a running task when its worker disappears", () => {
+    const task = queue.push("Recover me");
+    queue.markRunning(task.id, "w1");
+
+    const requeued = queue.requeueRunningTask("w1");
+
+    expect(requeued?.id).toBe(task.id);
+    expect(queue.getRunningTaskForWorker("w1")).toBeUndefined();
+    expect(queue.getAll().map((t) => t.id)).toContain(task.id);
   });
 });

@@ -28,6 +28,7 @@ const stateStore = new StateStore();
 const notifications = new NotificationManager();
 
 telemetry.start();
+telemetry.registerProcessManager(procMgr);
 telemetry.registerApi(procMgr, discovery);
 telemetry.registerCollector(collector);
 telemetry.setStreamer(streamer);

@@ -5,7 +5,7 @@ import { realpathSync } from "fs";
 import type { TelemetryReceiver } from "./telemetry.js";
 import type { ProcessManager } from "./process-mgr.js";
 import type { SessionStreamer } from "./session-stream.js";
-import { sendInputToTty, sendSelectionToTty } from "./tty-input.js";
+import { sendSelectionToTty } from "./tty-input.js";
 import { validateToken } from "./auth.js";
 import type { DaemonMessage, DaemonResponse } from "./types.js";
 
@@ -221,53 +221,26 @@ export class WsServer {
           return;
         }
 
-        // For managed workers: send via process stdin
-        const sent = this.procMgr.sendMessage(msg.workerId, msg.content);
-        if (sent) {
-          // Instant green for managed workers too
-          const managed = this.telemetry.get(msg.workerId);
-          if (managed) {
-            managed.status = "working";
-            managed.currentAction = "Thinking...";
-            managed.lastAction = "Received message";
-            managed.lastActionAt = Date.now();
-            managed.stuckMessage = undefined;
-            this.telemetry.notifyExternal(managed);
-          }
-          // Rapid-poll the session file so the response shows up fast
-          this.streamer.nudge(msg.workerId);
-          break;
-        }
-
-        // For discovered workers: type into Terminal.app via AppleScript
-        const worker = this.telemetry.get(msg.workerId);
-        if (worker?.tty) {
-          // Dashboard messages always send immediately — the user is intentionally
-          // typing into the terminal regardless of agent status.
-          const result = sendInputToTty(worker.tty, msg.content);
-          if (result.ok) {
-            worker.status = "working";
-            worker.currentAction = "Thinking...";
-            worker.lastAction = "Received message";
-            worker.lastActionAt = Date.now();
-            worker.stuckMessage = undefined;
-            this.telemetry.markDashboardInput(msg.workerId);
-            this.telemetry.markInputSent(msg.workerId, "dashboard");
-            this.telemetry.notifyExternal(worker);
-            // Rapid-poll the session file so the response shows up fast
-            this.streamer.nudge(msg.workerId);
-            console.log(`Typed into ${worker.tty}: ${msg.content.slice(0, 50)}`);
-          } else {
-            this.send(ws, {
-              type: "error",
-              error: result.error || `Failed to send to ${worker.tty}`,
-            });
-          }
-        } else {
+        const extra = msg as DaemonMessage & {
+          from?: string;
+          contextWorkerIds?: string[];
+          includeSenderContext?: boolean;
+        };
+        const result = this.telemetry.sendToWorker(msg.workerId, msg.content, {
+          source: "dashboard",
+          queueIfBusy: false,
+          markDashboardInput: true,
+          fromWorkerId: extra.from,
+          contextWorkerIds: extra.contextWorkerIds,
+          includeSenderContext: extra.includeSenderContext,
+        });
+        if (!result.ok) {
           this.send(ws, {
             type: "error",
-            error: `Worker ${msg.workerId} not found or no TTY`,
+            error: result.error,
           });
+        } else if (!result.queued) {
+          this.streamer.nudge(msg.workerId);
         }
         break;
       }

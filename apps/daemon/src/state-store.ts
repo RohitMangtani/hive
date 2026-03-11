@@ -22,7 +22,22 @@ export interface DaemonSnapshot {
     managed: boolean;
     tty?: string;
   }>;
-  messageQueue: Record<string, Array<{ id: string; content: string; source: string; queuedAt: number }>>;
+  messageQueue: Record<string, Array<{
+    id: string;
+    content: string;
+    source: string;
+    queuedAt: number;
+    withIdentity?: boolean;
+    lastAction?: string;
+    markDashboardInput?: boolean;
+    trackDispatch?: boolean;
+    taskBrief?: string;
+    taskId?: string;
+    workflowId?: string;
+    fromWorkerId?: string;
+    contextWorkerIds?: string[];
+    includeSenderContext?: boolean;
+  }>>;
   messageIdCounter: number;
   locks: Array<{ path: string; workerId: string; tty?: string; lockedAt: number }>;
   dispatchedTasks: Record<string, { task: string; project: string; sentAt: number; taskId?: string; workflowId?: string; fromWorkerId?: string }>;

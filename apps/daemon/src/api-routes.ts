@@ -2,7 +2,6 @@ import type { Request, Response, NextFunction } from "express";
 import type express from "express";
 import { join } from "path";
 import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync, statSync, realpathSync } from "fs";
-import { sendInputToTty } from "./tty-input.js";
 import type { ProcessManager } from "./process-mgr.js";
 import type { ProcessDiscovery } from "./discovery.js";
 import type { TelemetryReceiver } from "./telemetry.js";
@@ -22,57 +21,68 @@ export function registerApiRoutes(
 
   // POST /api/message
   app.post("/api/message", requireAuth, (req, res) => {
-    const { workerId, content, from } = req.body as { workerId?: string; content?: string; from?: string };
+    const {
+      workerId,
+      content,
+      from,
+      contextWorkerIds,
+      includeSenderContext,
+    } = req.body as {
+      workerId?: string;
+      content?: string;
+      from?: string;
+      contextWorkerIds?: string[];
+      includeSenderContext?: boolean;
+    };
     if (!workerId || !content) {
       res.status(400).json({ error: "Missing workerId or content" });
       return;
     }
 
-    const sent = procMgr.sendMessage(workerId, content);
-    if (sent) {
-      const managed = receiver.get(workerId);
-      if (managed) {
-        managed.status = "working";
-        managed.currentAction = "Thinking...";
-        managed.lastAction = "Received message";
-        managed.lastActionAt = Date.now();
-        managed.stuckMessage = undefined;
-        receiver.notifyExternal(managed);
+    const result = receiver.sendToWorker(workerId, content, {
+      source: from ? `api:message:from:${from}` : "api:message",
+      withIdentity: true,
+      trackDispatch: true,
+      taskBrief: content.slice(0, 200),
+      fromWorkerId: from,
+      contextWorkerIds,
+      includeSenderContext,
+    });
+    if (!result.ok) {
+      const worker = receiver.get(workerId);
+      res.status(worker ? 500 : 404).json({ error: result.error });
+      return;
+    }
+    res.json(result);
+  });
+
+  // GET /api/context
+  app.get("/api/context", requireAuth, (req, res) => {
+    const workerId = req.query.workerId as string | undefined;
+    const workerIds = typeof req.query.workerIds === "string"
+      ? req.query.workerIds.split(",").map((id) => id.trim()).filter(Boolean)
+      : undefined;
+    const history = req.query.history === "1" || req.query.history === "true";
+    const historyLimit = Number(req.query.historyLimit || 6);
+    const options = {
+      includeHistory: history,
+      historyLimit: Number.isFinite(historyLimit) ? Math.max(1, Math.min(12, historyLimit)) : 6,
+    };
+
+    if (workerId) {
+      const context = receiver.getWorkerContext(workerId, options);
+      if (!context) {
+        res.status(404).json({ error: `Worker ${workerId} not found` });
+        return;
       }
-      receiver.trackDispatch(workerId, content.slice(0, 200), undefined, undefined, from);
-      res.json({ ok: true });
+      res.json(context);
       return;
     }
 
-    const worker = receiver.get(workerId);
-    if (!worker?.tty) {
-      res.status(404).json({ error: `Worker ${workerId} not found or no TTY` });
-      return;
-    }
-
-    if (worker.status === "working") {
-      const msgId = receiver.enqueueMessage(workerId, content, from ? `api:message:from:${from}` : "api:message");
-      const queue = receiver.getMessageQueueSize(workerId);
-      console.log(`[queue] ${worker.tty}: queued ${msgId} (${queue} pending, worker ${worker.status})`);
-      res.json({ ok: true, queued: true, id: msgId, position: queue });
-      return;
-    }
-
-    const result = sendInputToTty(worker.tty, content);
-    if (result.ok) {
-      worker.status = "working";
-      worker.currentAction = "Thinking...";
-      worker.lastAction = "Received message";
-      worker.lastActionAt = Date.now();
-      worker.stuckMessage = undefined;
-      receiver.setIdleConfirmed(workerId, false);
-      receiver.markInputSent(workerId, "api:message");
-      receiver.trackDispatch(workerId, content.slice(0, 200), undefined, undefined, from);
-      receiver.notifyExternal(worker);
-      res.json({ ok: true });
-    } else {
-      res.status(500).json({ error: result.error || `Failed to send to ${worker.tty}` });
-    }
+    res.json(receiver.getWorkerContexts({
+      ...options,
+      ...(workerIds ? { workerIds } : {}),
+    }));
   });
 
   // GET /api/message-queue
@@ -338,5 +348,5 @@ export function registerApiRoutes(
     }
   });
 
-  console.log("  Dispatch API registered: /api/workers, /api/message, /api/message-queue, /api/queue, /api/locks, /api/conflicts, /api/scratchpad, /api/audit, /api/artifacts, /api/learning, /api/signals, /api/debug, /api/spawn, /api/projects, /api/notifications/config");
+  console.log("  Dispatch API registered: /api/workers, /api/context, /api/message, /api/message-queue, /api/queue, /api/locks, /api/conflicts, /api/scratchpad, /api/audit, /api/artifacts, /api/learning, /api/signals, /api/debug, /api/spawn, /api/projects, /api/notifications/config");
 }

@@ -1,14 +1,13 @@
 import { readdirSync, readFileSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
 import type { TelemetryReceiver } from "./telemetry.js";
-import { sendInputToTty } from "./tty-input.js";
 
 /**
  * File-based message relay for agents that can't access the HTTP API
  * (e.g., Codex with sandbox network restrictions).
  *
  * Agents write JSON files to ~/.hive/outbox/:
- *   - message: {type:"message", workerId:"discovered_XXX", content:"..."}
+ *   - message: {type:"message", workerId:"discovered_XXX", content:"...", from?:"worker-id", contextWorkerIds?:["worker-id"]}
  *   - learning: {type:"learning", project:"hive", lesson:"..."}
  *   - scratchpad: {type:"scratchpad", key:"...", value:"...", setBy:"codex-q4"}
  *
@@ -39,8 +38,9 @@ export class OutboxScanner {
       try {
         const raw = readFileSync(fullPath, "utf-8");
         const msg = JSON.parse(raw);
-        this.process(msg);
-        unlinkSync(fullPath);
+        if (this.process(msg)) {
+          unlinkSync(fullPath);
+        }
       } catch {
         // Bad JSON or processing error — remove to prevent infinite retry
         try { unlinkSync(fullPath); } catch { /* ignore */ }
@@ -48,38 +48,51 @@ export class OutboxScanner {
     }
   }
 
-  private process(msg: Record<string, unknown>): void {
+  private process(msg: Record<string, unknown>): boolean {
     switch (msg.type) {
       case "message": {
         const workerId = msg.workerId as string;
         const content = msg.content as string;
-        if (!workerId || !content) return;
-        const worker = this.telemetry.get(workerId);
-        if (!worker?.tty) return;
-        sendInputToTty(worker.tty, content);
-        this.telemetry.markInputSent(workerId, "outbox");
-        console.log(`[outbox] Dispatched message to ${workerId}`);
-        break;
+        const from = msg.from as string | undefined;
+        const contextWorkerIds = Array.isArray(msg.contextWorkerIds)
+          ? msg.contextWorkerIds.filter((value): value is string => typeof value === "string")
+          : undefined;
+        const includeSenderContext = msg.includeSenderContext as boolean | undefined;
+        if (!workerId || !content) return true;
+        const result = this.telemetry.sendToWorker(workerId, content, {
+          source: from ? `outbox:from:${from}` : "outbox",
+          fromWorkerId: from,
+          contextWorkerIds,
+          includeSenderContext,
+        });
+        if (result.ok) {
+          console.log(`[outbox] Dispatched message to ${workerId}${result.queued ? ` (queued at position ${result.position})` : ""}`);
+          return true;
+        } else {
+          console.log(`[outbox] Failed to dispatch message to ${workerId}: ${result.error}`);
+          return false;
+        }
       }
       case "learning": {
         const project = msg.project as string;
         const lesson = msg.lesson as string;
-        if (!project || !lesson) return;
+        if (!project || !lesson) return true;
         this.telemetry.writeLearning(project, lesson);
         console.log(`[outbox] Wrote learning for ${project}`);
-        break;
+        return true;
       }
       case "scratchpad": {
         const key = msg.key as string;
         const value = msg.value as string;
         const setBy = (msg.setBy as string) || "outbox";
-        if (!key || !value) return;
+        if (!key || !value) return true;
         this.telemetry.setScratchpad(key, value, setBy);
         console.log(`[outbox] Set scratchpad: ${key}`);
-        break;
+        return true;
       }
       default:
         console.log(`[outbox] Unknown message type: ${msg.type}`);
+        return true;
     }
   }
 }

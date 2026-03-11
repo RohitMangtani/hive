@@ -1,5 +1,6 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
+import { randomBytes } from "crypto";
 import { basename, join } from "path";
 import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
 import { describeAction, truncate } from "./utils.js";
@@ -9,7 +10,7 @@ import { validateToken } from "./auth.js";
 import { sendInputToTty } from "./tty-input.js";
 import type { ProcessManager } from "./process-mgr.js";
 import type { ProcessDiscovery } from "./discovery.js";
-import type { WorkerState, TelemetryEvent } from "./types.js";
+import type { ChatEntry, WorkerState, TelemetryEvent } from "./types.js";
 import { TaskQueue } from "./task-queue.js";
 import type { QueuedTask } from "./task-queue.js";
 import { Scratchpad } from "./scratchpad.js";
@@ -21,6 +22,51 @@ import { SuggestionEngine } from "./suggestion-engine.js";
 
 const IDLE_THRESHOLD = 30_000;
 const HOME = process.env.HOME || `/Users/${process.env.USER}`;
+
+interface QueuedMessage {
+  id: string;
+  content: string;
+  source: string;
+  queuedAt: number;
+  withIdentity?: boolean;
+  lastAction?: string;
+  markDashboardInput?: boolean;
+  trackDispatch?: boolean;
+  taskBrief?: string;
+  taskId?: string;
+  workflowId?: string;
+  fromWorkerId?: string;
+  contextWorkerIds?: string[];
+  includeSenderContext?: boolean;
+}
+
+interface WorkerContextOptions {
+  includeHistory?: boolean;
+  historyLimit?: number;
+  artifactLimit?: number;
+}
+
+export interface WorkerContextSnapshot {
+  workerId: string;
+  quadrant?: number;
+  tty?: string;
+  model: string;
+  project: string;
+  projectName: string;
+  status: WorkerState["status"];
+  currentAction: string | null;
+  lastAction: string;
+  lastDirection?: string;
+  recentArtifacts: Array<{ path: string; action: string; ts: number }>;
+  recentMessages: ChatEntry[];
+  contextSummary: string;
+}
+
+interface TelemetryStreamer {
+  getSessionFile(id: string): string | null;
+  setSessionFile(id: string, path: string): void;
+  readHistory?(workerId: string): ChatEntry[];
+}
 
 export class TelemetryReceiver {
   private workers = new Map<string, WorkerState>();
@@ -47,7 +93,7 @@ export class TelemetryReceiver {
   private suggestionEngine = new SuggestionEngine();
 
   // Session file streamer reference (set via setStreamer, used for register-tty correction)
-  private streamer: { getSessionFile(id: string): string | null; setSessionFile(id: string, path: string): void } | null = null;
+  private streamer: TelemetryStreamer | null = null;
 
   // Sessions corrected by register-tty are "pinned" — discovery's registerSession
   // must not overwrite them with wrong birthtime-based guesses.
@@ -77,7 +123,7 @@ export class TelemetryReceiver {
   private static readonly MAX_SIGNALS = 50;
 
   // Message queue for busy workers
-  private messageQueue = new Map<string, Array<{ id: string; content: string; source: string; queuedAt: number }>>();
+  private messageQueue = new Map<string, QueuedMessage[]>();
   private messageIdCounter = 0;
 
   // Pending hook queue (hooks waiting for session registration)
@@ -92,6 +138,7 @@ export class TelemetryReceiver {
 
   private token: string;
   private collector: Collector | null = null;
+  private processManager: ProcessManager | null = null;
 
   constructor(port: number, token: string) {
     this.port = port;
@@ -235,8 +282,12 @@ export class TelemetryReceiver {
     }
   }
 
+  registerProcessManager(procMgr: ProcessManager): void {
+    this.processManager = procMgr;
+  }
+
   /** Give telemetry access to the session streamer for register-tty corrections */
-  setStreamer(s: { getSessionFile(id: string): string | null; setSessionFile(id: string, path: string): void }): void {
+  setStreamer(s: TelemetryStreamer): void {
     this.streamer = s;
   }
 
@@ -293,6 +344,21 @@ export class TelemetryReceiver {
     }
     this.sessionToWorker.set(sessionId, workerId);
     this.replayPendingHooks(sessionId, workerId);
+  }
+
+  registerManagedSession(workerId: string, project: string, sessionId: string): void {
+    this.sessionToWorker.set(sessionId, workerId);
+    const encodings = [
+      project.replace(/\//g, "-"),
+      HOME.replace(/\//g, "-"),
+    ];
+    for (const encoded of encodings) {
+      const candidate = join(HOME, ".claude", "projects", encoded, `${sessionId}.jsonl`);
+      if (existsSync(candidate)) {
+        this.streamer?.setSessionFile(workerId, candidate);
+        break;
+      }
+    }
   }
 
   /** Returns the pinned session_id for a worker, if register-tty has corrected it */
@@ -370,6 +436,138 @@ export class TelemetryReceiver {
     return this.artifacts.get(workerId) || [];
   }
 
+  private getRecentArtifacts(workerId: string, limit = 5): Array<{ path: string; action: string; ts: number }> {
+    return this.getArtifacts(workerId)
+      .filter((artifact) => Date.now() - artifact.ts < 30 * 60 * 1000)
+      .slice(-limit);
+  }
+
+  private getRecentMessages(workerId: string, limit = 6): ChatEntry[] {
+    if (!this.streamer?.readHistory) return [];
+    return this.streamer.readHistory(workerId)
+      .slice(-limit)
+      .map((entry) => ({
+        ...entry,
+        text: truncate(entry.text, 160),
+      }));
+  }
+
+  private formatWorkerContext(context: WorkerContextSnapshot): string {
+    const heading = `${context.quadrant ? `Q${context.quadrant}` : context.workerId} ${context.tty ? `(${context.tty}, ${context.model})` : `(${context.model})`}`;
+    const lines = [
+      `### ${heading}`,
+      `- Project: ${context.projectName}`,
+      `- Status: ${context.status}`,
+      `- Action: ${context.currentAction || context.lastAction}`,
+    ];
+
+    if (context.lastDirection) {
+      lines.push(`- Last direction: ${context.lastDirection}`);
+    }
+
+    if (context.recentArtifacts.length > 0) {
+      const files = context.recentArtifacts
+        .map((artifact) => `${artifact.path.split("/").slice(-2).join("/")} (${artifact.action})`);
+      lines.push(`- Recent files: ${files.join(", ")}`);
+    }
+
+    if (context.recentMessages.length > 0) {
+      lines.push("- Recent conversation:");
+      for (const entry of context.recentMessages) {
+        lines.push(`  - ${entry.role}: ${entry.text}`);
+      }
+    }
+
+    return lines.join("\n");
+  }
+
+  getWorkerContext(workerId: string, options: WorkerContextOptions = {}): WorkerContextSnapshot | null {
+    const worker = this.get(workerId);
+    if (!worker) return null;
+
+    const recentArtifacts = this.getRecentArtifacts(workerId, options.artifactLimit ?? 5);
+    const recentMessages = options.includeHistory === false
+      ? []
+      : this.getRecentMessages(workerId, options.historyLimit ?? 6);
+
+    const context: WorkerContextSnapshot = {
+      workerId: worker.id,
+      quadrant: worker.quadrant,
+      tty: worker.tty,
+      model: worker.model || "claude",
+      project: worker.project,
+      projectName: worker.projectName,
+      status: worker.status,
+      currentAction: worker.currentAction,
+      lastAction: worker.lastAction,
+      lastDirection: worker.lastDirection,
+      recentArtifacts,
+      recentMessages,
+      contextSummary: "",
+    };
+    context.contextSummary = this.formatWorkerContext(context);
+    return context;
+  }
+
+  getWorkerContexts(options: WorkerContextOptions & { workerIds?: string[] } = {}): WorkerContextSnapshot[] {
+    const allow = options.workerIds ? new Set(options.workerIds) : null;
+    return this.getAll()
+      .filter((worker) => !allow || allow.has(worker.id))
+      .map((worker) => this.getWorkerContext(worker.id, options))
+      .filter((worker): worker is WorkerContextSnapshot => worker !== null);
+  }
+
+  composeMessageWithContext(
+    targetWorkerId: string,
+    content: string,
+    options: {
+      fromWorkerId?: string;
+      contextWorkerIds?: string[];
+      includeSenderContext?: boolean;
+      historyLimit?: number;
+    } = {},
+  ): string {
+    const contextIds = new Set<string>();
+    if (options.includeSenderContext !== false && options.fromWorkerId && this.get(options.fromWorkerId)) {
+      contextIds.add(options.fromWorkerId);
+    }
+    for (const workerId of options.contextWorkerIds || []) {
+      if (this.get(workerId)) contextIds.add(workerId);
+    }
+    contextIds.delete(targetWorkerId);
+
+    if (contextIds.size === 0) return content;
+
+    const contexts = Array.from(contextIds)
+      .map((workerId) => this.getWorkerContext(workerId, { historyLimit: options.historyLimit ?? 4 }))
+      .filter((ctx): ctx is WorkerContextSnapshot => ctx !== null);
+    if (contexts.length === 0) return content;
+
+    return `${content.trim()}\n\n## Hive Peer Context\nUse this only if it is relevant to the task.\n\n${contexts.map((ctx) => ctx.contextSummary).join("\n\n")}`;
+  }
+
+  private writeContextBundle(worker: WorkerState, content: string): string {
+    const dir = join(HOME, ".hive", "context-messages");
+    const name = `msg-${Date.now()}-${randomBytes(4).toString("hex")}.md`;
+    const path = join(dir, name);
+    const header = [
+      "# Hive Routed Message",
+      `Target: ${worker.quadrant ? `Q${worker.quadrant}` : worker.id}${worker.tty ? ` (${worker.tty})` : ""}`,
+      `Model: ${worker.model || "claude"}`,
+      `Created: ${new Date().toISOString()}`,
+      "",
+    ].join("\n");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(path, `${header}${content.trim()}\n`, "utf-8");
+    return path;
+  }
+
+  private prepareTtyPayload(worker: WorkerState, content: string): string {
+    if (!worker.tty || content.length <= 400) return content;
+    const bundlePath = this.writeContextBundle(worker, content);
+    return `Read ${bundlePath} and follow it exactly. The full routed message and peer context are in that file.`;
+  }
+
   checkConflicts(
     filePath: string,
     excludeWorkerId?: string,
@@ -408,6 +606,9 @@ export class TelemetryReceiver {
     for (const [workerId, dispatch] of this.dispatchedTasks) {
       const worker = this.workers.get(workerId);
       if (!worker) {
+        if (dispatch.taskId) {
+          this.taskQueue.requeueRunningTask(workerId);
+        }
         this.dispatchedTasks.delete(workerId);
         continue;
       }
@@ -420,6 +621,10 @@ export class TelemetryReceiver {
           : "";
         const lesson = `Completed: ${dispatch.task}${fileList}`;
         this.writeLearning(dispatch.project, lesson);
+
+        if (dispatch.taskId) {
+          this.taskQueue.markCompleted(dispatch.taskId);
+        }
 
         // Auto-handoff: if this task was part of a workflow, build handoff for next step
         if (dispatch.workflowId) {
@@ -444,7 +649,10 @@ export class TelemetryReceiver {
               ? ` Files changed: ${files.slice(-8).join(", ")}.`
               : " No files changed.";
             const notification = `[Hive] ${receiverName} finished your task: "${dispatch.task}".${filesSummary} Verify their work didn't overwrite or conflict with yours.`;
-            this.enqueueMessage(dispatch.fromWorkerId, notification, "dispatch-callback");
+            this.enqueueMessage(dispatch.fromWorkerId, {
+              content: notification,
+              source: "dispatch-callback",
+            });
             console.log(`[dispatch-callback] ${receiverName} → ${senderName}: task complete, verification queued`);
           }
         }
@@ -540,7 +748,10 @@ export class TelemetryReceiver {
 
     // Replay pending register-tty corrections queued before discovery.
     // identity.sh may fire before the daemon's first scan discovers the worker.
-    if (worker.tty) {
+    // Skip for Codex workers: pending registrations come from Claude's identity.sh
+    // hook which never fires for Codex. Any pending registration for a Codex worker's
+    // TTY is stale from a previous Claude session on that same TTY.
+    if (worker.tty && worker.model !== "codex") {
       const pendingSession = this.pendingTtyRegistrations.get(worker.tty);
       if (pendingSession) {
         console.log(`[register-tty] Replaying queued correction: tty=${worker.tty} session=${pendingSession} → ${id}`);
@@ -570,6 +781,11 @@ export class TelemetryReceiver {
   }
 
   removeWorker(id: string): void {
+    const trackedDispatch = this.dispatchedTasks.get(id);
+    if (trackedDispatch?.taskId) {
+      this.taskQueue.requeueRunningTask(id);
+    }
+    this.dispatchedTasks.delete(id);
     this.workers.delete(id);
     this.messageQueue.delete(id);
     this.lastHookTime.delete(id);
@@ -622,20 +838,35 @@ export class TelemetryReceiver {
       }
     }
 
+    // Stamp each WorkerState with its quadrant so WebSocket broadcasts include it.
+    // This is the single source of truth — dashboard uses this instead of computing its own.
+    for (const w of workers) {
+      const q = this.quadrantAssignments.get(w.id);
+      w.quadrant = q; // undefined if >4 workers
+    }
+
+    const contexts = workers
+      .map((worker) => this.getWorkerContext(worker.id, { historyLimit: 6, artifactLimit: 5 }))
+      .filter((worker): worker is WorkerContextSnapshot => worker !== null);
+    const contextsByWorker = new Map(contexts.map((context) => [context.workerId, context]));
+
     const slots: Array<{
       quadrant: number; id: string; pid: number; tty: string | undefined;
       project: string; projectName: string; status: string;
       currentAction: string | null; lastAction: string; startedAt: number;
-      model: string;
+      model: string; lastDirection?: string; contextSummary?: string;
     }> = [];
     for (const w of workers) {
       const q = this.quadrantAssignments.get(w.id);
       if (!q) continue; // more than 4 workers
+      const context = contextsByWorker.get(w.id);
       slots.push({
         quadrant: q, id: w.id, pid: w.pid, tty: w.tty,
         project: w.project, projectName: w.projectName, status: w.status,
         currentAction: w.currentAction, lastAction: w.lastAction, startedAt: w.startedAt,
         model: w.model || "claude",
+        lastDirection: w.lastDirection,
+        contextSummary: context?.contextSummary,
       });
     }
     slots.sort((a, b) => a.quadrant - b.quadrant);
@@ -645,6 +876,10 @@ export class TelemetryReceiver {
       writeFileSync(
         join(hiveDir, "workers.json"),
         JSON.stringify({ updatedAt: Date.now(), workers: slots }, null, 2) + "\n"
+      );
+      writeFileSync(
+        join(hiveDir, "contexts.json"),
+        JSON.stringify({ updatedAt: Date.now(), workers: contexts }, null, 2) + "\n"
       );
     } catch { /* non-critical */ }
   }
@@ -687,6 +922,20 @@ export class TelemetryReceiver {
     this.notify(worker);
   }
 
+  markWorkerIdle(workerId: string, lastAction?: string): void {
+    const worker = this.workers.get(workerId);
+    if (!worker) return;
+    worker.status = "idle";
+    worker.currentAction = null;
+    worker.stuckMessage = undefined;
+    worker.lastActionAt = Date.now();
+    if (lastAction) worker.lastAction = lastAction;
+    this.idleConfirmed.set(workerId, false);
+    this.lockManager.releaseAll(workerId);
+    this.generateSuggestions(worker);
+    this.notify(worker);
+  }
+
   /** Trigger LLM suggestion generation for an idle worker */
   private generateSuggestions(worker: WorkerState): void {
     if (!this.suggestionEngine.isEnabled()) return;
@@ -724,12 +973,144 @@ export class TelemetryReceiver {
 
   // --- Message queue ---
 
-  enqueueMessage(workerId: string, content: string, source: string): string {
+  sendToWorker(
+    workerId: string,
+    content: string,
+    options: {
+      source: string;
+      lastAction?: string;
+      queueIfBusy?: boolean;
+      withIdentity?: boolean;
+      markDashboardInput?: boolean;
+      trackDispatch?: boolean;
+      taskBrief?: string;
+      taskId?: string;
+      workflowId?: string;
+      fromWorkerId?: string;
+      contextWorkerIds?: string[];
+      includeSenderContext?: boolean;
+    },
+  ): { ok: true; queued?: boolean; id?: string; position?: number } | { ok: false; error: string } {
+    const worker = this.get(workerId);
+    if (!worker) {
+      return { ok: false, error: `Worker ${workerId} not found` };
+    }
+
+    const contentWithContext = this.composeMessageWithContext(workerId, content, {
+      fromWorkerId: options.fromWorkerId,
+      contextWorkerIds: options.contextWorkerIds,
+      includeSenderContext: options.includeSenderContext,
+    });
+    const deliverableContent = worker.tty
+      ? this.prepareTtyPayload(worker, contentWithContext)
+      : contentWithContext;
+
+    let payload = deliverableContent;
+    if (options.withIdentity && worker.tty) {
+      const q = worker.quadrant;
+      const identity = q ? `[You are Q${q}, ${worker.tty}, ${worker.model || "claude"}] ` : "";
+      payload = identity + deliverableContent;
+    }
+
+    if (options.queueIfBusy !== false && worker.status === "working") {
+      const id = this.enqueueMessage(workerId, {
+        content,
+        source: options.source,
+        withIdentity: options.withIdentity,
+        lastAction: options.lastAction,
+        markDashboardInput: options.markDashboardInput,
+        trackDispatch: options.trackDispatch,
+        taskBrief: options.taskBrief,
+        taskId: options.taskId,
+        workflowId: options.workflowId,
+        fromWorkerId: options.fromWorkerId,
+        contextWorkerIds: options.contextWorkerIds,
+        includeSenderContext: options.includeSenderContext,
+      });
+      return {
+        ok: true,
+        queued: true,
+        id,
+        position: this.getMessageQueueSize(workerId),
+      };
+    }
+
+    let error: string | undefined;
+    if (worker.managed) {
+      if (!this.processManager) {
+        error = `Worker ${workerId} is managed, but no process manager is registered`;
+      } else {
+        const result = this.processManager.sendMessage(workerId, payload);
+        if (result.status === "busy") {
+          if (options.queueIfBusy !== false) {
+            const id = this.enqueueMessage(workerId, {
+              content,
+              source: options.source,
+              withIdentity: options.withIdentity,
+              lastAction: options.lastAction,
+              markDashboardInput: options.markDashboardInput,
+              trackDispatch: options.trackDispatch,
+              taskBrief: options.taskBrief,
+              taskId: options.taskId,
+              workflowId: options.workflowId,
+              fromWorkerId: options.fromWorkerId,
+              contextWorkerIds: options.contextWorkerIds,
+              includeSenderContext: options.includeSenderContext,
+            });
+            return {
+              ok: true,
+              queued: true,
+              id,
+              position: this.getMessageQueueSize(workerId),
+            };
+          }
+          error = `Worker ${workerId} is busy`;
+        } else if (result.status === "not_found") {
+          error = `Worker ${workerId} not found`;
+        } else if (result.status === "error") {
+          error = result.error;
+        }
+      }
+    } else if (worker.tty) {
+      const result = sendInputToTty(worker.tty, payload);
+      if (!result.ok) {
+        error = result.error || `Failed to send to ${worker.tty}`;
+      }
+    } else {
+      error = `Worker ${workerId} has no available input route`;
+    }
+
+    if (error) {
+      return { ok: false, error };
+    }
+
+    worker.status = "working";
+    worker.currentAction = "Thinking...";
+    worker.lastAction = options.lastAction || "Received message";
+    worker.lastActionAt = Date.now();
+    worker.stuckMessage = undefined;
+    this.idleConfirmed.set(workerId, false);
+    if (options.markDashboardInput) this.markDashboardInput(workerId);
+    this.markInputSent(workerId, options.source);
+    if (options.trackDispatch) {
+      this.trackDispatch(
+        workerId,
+        options.taskBrief || content.slice(0, 200),
+        options.taskId,
+        options.workflowId,
+        options.fromWorkerId,
+      );
+    }
+    this.notifyExternal(worker);
+    return { ok: true };
+  }
+
+  enqueueMessage(workerId: string, message: Omit<QueuedMessage, "id" | "queuedAt">): string {
     if (!this.messageQueue.has(workerId)) {
       this.messageQueue.set(workerId, []);
     }
     const id = `m${++this.messageIdCounter}`;
-    this.messageQueue.get(workerId)!.push({ id, content, source, queuedAt: Date.now() });
+    this.messageQueue.get(workerId)!.push({ ...message, id, queuedAt: Date.now() });
     return id;
   }
 
@@ -773,7 +1154,7 @@ export class TelemetryReceiver {
     for (const [workerId, queue] of this.messageQueue) {
       if (queue.length === 0) continue;
       const worker = this.get(workerId);
-      if (!worker?.tty || worker.status !== "idle") continue;
+      if (!worker || worker.status !== "idle") continue;
       if (Date.now() - worker.lastActionAt < 15_000) continue;
 
       const msg = queue.shift()!;
@@ -782,18 +1163,27 @@ export class TelemetryReceiver {
         continue;
       }
 
-      const result = sendInputToTty(worker.tty, msg.content);
-      if (result.ok) {
-        worker.status = "working";
-        worker.currentAction = "Thinking...";
-        worker.lastAction = `Queued message (${msg.source})`;
-        worker.lastActionAt = Date.now();
-        worker.stuckMessage = undefined;
-        this.idleConfirmed.set(workerId, false);
-        this.markInputSent(workerId, msg.source);
-        this.trackDispatch(workerId, msg.content.slice(0, 200));
-        this.notifyExternal(worker);
+      const result = this.sendToWorker(workerId, msg.content, {
+        source: msg.source,
+        queueIfBusy: false,
+        withIdentity: msg.withIdentity,
+        lastAction: msg.lastAction || `Queued message (${msg.source})`,
+        markDashboardInput: msg.markDashboardInput,
+        trackDispatch: msg.trackDispatch ?? true,
+        taskBrief: msg.taskBrief || msg.content.slice(0, 200),
+        taskId: msg.taskId,
+        workflowId: msg.workflowId,
+        fromWorkerId: msg.fromWorkerId,
+        contextWorkerIds: msg.contextWorkerIds,
+        includeSenderContext: msg.includeSenderContext,
+      });
+      if (result.ok && !result.queued) {
         console.log(`[queue] ${worker.tty}: drained ${msg.id} (${queue.length} remaining)`);
+      } else {
+        queue.unshift(msg);
+        if (!result.ok) {
+          console.log(`[queue] ${worker.tty || worker.id}: failed to drain ${msg.id} — ${result.error}`);
+        }
       }
       break;
     }
@@ -857,6 +1247,25 @@ export class TelemetryReceiver {
     }
 
     if (taskProject) {
+      const relatedWorkers = others
+        .filter((worker) => worker.project.includes(taskProject))
+        .sort((a, b) => b.lastActionAt - a.lastActionAt)
+        .slice(0, 3);
+      if (relatedWorkers.length > 0) {
+        lines.push("");
+        lines.push("Relevant agent context:");
+        for (const worker of relatedWorkers) {
+          const summary = [
+            `${worker.tty || worker.id} (${worker.model || "claude"})`,
+            worker.currentAction || worker.lastAction,
+            worker.lastDirection ? `last direction: ${worker.lastDirection}` : null,
+          ].filter(Boolean).join(" | ");
+          lines.push(`- ${summary}`);
+        }
+      }
+    }
+
+    if (taskProject) {
       const learningPaths = [
         join(taskProject, ".claude", "hive-learnings.md"),
         join(HOME, "factory", "projects", taskProject, ".claude", "hive-learnings.md"),
@@ -910,19 +1319,17 @@ export class TelemetryReceiver {
 
       const fullTask = task.task + handoff + brief;
 
-      const result = sendInputToTty(target.tty, fullTask);
-      if (result.ok) {
-        target.status = "working";
-        target.currentAction = "Thinking...";
-        target.lastAction = `Task queue: ${task.id}`;
-        target.lastActionAt = Date.now();
-        target.stuckMessage = undefined;
-        this.markInputSent(target.id, "task-queue");
-        this.trackDispatch(target.id, `Queue ${task.id}: ${task.task.slice(0, 150)}`, task.id, task.workflowId);
-        this.notifyExternal(target);
-
-        this.taskQueue.remove(task.id);
-        this.taskQueue.markCompleted(task.id);
+      const result = this.sendToWorker(target.id, fullTask, {
+        source: "task-queue",
+        queueIfBusy: false,
+        lastAction: `Task queue: ${task.id}`,
+        trackDispatch: true,
+        taskBrief: `Queue ${task.id}: ${task.task.slice(0, 150)}`,
+        taskId: task.id,
+        workflowId: task.workflowId,
+      });
+      if (result.ok && !result.queued) {
+        this.taskQueue.markRunning(task.id, target.id);
         console.log(`[task-queue] Dispatched ${task.id} to ${target.tty} (${this.taskQueue.length} remaining)`);
 
         // One task per worker per tick
@@ -1335,7 +1742,7 @@ export class TelemetryReceiver {
       managed: w.managed, tty: w.tty,
     }));
 
-    const messageQueue: Record<string, Array<{ id: string; content: string; source: string; queuedAt: number }>> = {};
+    const messageQueue: Record<string, QueuedMessage[]> = {};
     for (const [wid, queue] of this.messageQueue) {
       if (queue.length > 0) messageQueue[wid] = [...queue];
     }
