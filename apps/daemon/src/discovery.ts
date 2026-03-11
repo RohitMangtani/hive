@@ -48,6 +48,11 @@ interface SessionContext {
   highConfidence: boolean;
 }
 
+function extractTurnId(line: string): string | null {
+  const match = line.match(/"turn_id"\s*:\s*"([^"]+)"/);
+  return match ? match[1] : null;
+}
+
 export class ProcessDiscovery {
   private telemetry: TelemetryReceiver;
   private streamer: SessionStreamer;
@@ -1375,13 +1380,32 @@ export class ProcessDiscovery {
       let lastUser = false;    // saw "user" or tool_result more recently than "assistant"
       let lastAssistant = false;
       let foundAnyPattern = false;
+      let latestStartedTurnId: string | null = null;
+      let sawNewerTurnActivity = false;
 
       for (let i = lines.length - 1; i >= Math.max(0, lines.length - 20); i--) {
         const line = lines[i];
 
+        // Codex: if a newer turn has already started, any older task_complete
+        // belongs to the PREVIOUS turn and must not force idle for the current one.
+        if (line.includes('"task_started"')) {
+          latestStartedTurnId ||= extractTurnId(line);
+          sawNewerTurnActivity = true;
+          foundAnyPattern = true;
+          continue;
+        }
+
         // Codex: task_complete is a definitive "done" signal — immediate idle.
         // No cooldown or hysteresis needed. This is the strongest idle indicator.
         if (line.includes('"task_complete"')) {
+          const completedTurnId = extractTurnId(line);
+          const stalePreviousTurn =
+            sawNewerTurnActivity &&
+            (!latestStartedTurnId || completedTurnId !== latestStartedTurnId);
+          if (stalePreviousTurn) {
+            foundAnyPattern = true;
+            continue;
+          }
           result.status = "idle";
           result.highConfidence = true;
           foundAnyPattern = true;
@@ -1415,6 +1439,7 @@ export class ProcessDiscovery {
           if ((line.includes('"type":"user"') || line.includes('"type": "user"') ||
               line.includes('"type":"user_message"')) && !line.includes('"agent_message"')) {
             lastUser = true;
+            sawNewerTurnActivity = true;
             foundAnyPattern = true;
           } else if (line.includes('"type":"assistant"') || line.includes('"type": "assistant"') ||
                      (line.includes('"role":"assistant"') && line.includes('"response_item"'))) {
