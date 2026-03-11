@@ -40,7 +40,7 @@ export function registerApiRoutes(
       return;
     }
 
-    const result = receiver.sendToWorker(workerId, content, {
+    receiver.sendToWorkerAsync(workerId, content, {
       source: from ? `api:message:from:${from}` : "api:message",
       withIdentity: true,
       trackDispatch: true,
@@ -48,13 +48,14 @@ export function registerApiRoutes(
       fromWorkerId: from,
       contextWorkerIds,
       includeSenderContext,
+    }).then((result) => {
+      if (!result.ok) {
+        const worker = receiver.get(workerId);
+        res.status(worker ? 500 : 404).json({ error: result.error });
+        return;
+      }
+      res.json(result);
     });
-    if (!result.ok) {
-      const worker = receiver.get(workerId);
-      res.status(worker ? 500 : 404).json({ error: result.error });
-      return;
-    }
-    res.json(result);
   });
 
   // GET /api/context
@@ -311,7 +312,8 @@ export function registerApiRoutes(
     }
 
     const model = (rawModel === "codex" ? "codex" : "claude") as "claude" | "codex";
-    const result = spawnTerminalWindow(realPath, model);
+    const openQ = receiver.getFirstOpenQuadrant();
+    const result = spawnTerminalWindow(realPath, model, openQ);
     if (!result.ok) {
       res.status(500).json({ error: result.error || "Failed to spawn terminal" });
       return;

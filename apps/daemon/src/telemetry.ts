@@ -7,7 +7,7 @@ import { describeAction, truncate } from "./utils.js";
 import type { DaemonSnapshot } from "./state-store.js";
 import type { Server } from "http";
 import { validateToken } from "./auth.js";
-import { sendInputToTty } from "./tty-input.js";
+import { sendInputToTty, sendInputToTtyAsync } from "./tty-input.js";
 import type { ProcessManager } from "./process-mgr.js";
 import type { ProcessDiscovery } from "./discovery.js";
 import type { ChatEntry, WorkerState, TelemetryEvent } from "./types.js";
@@ -17,7 +17,7 @@ import { Scratchpad } from "./scratchpad.js";
 import type { ScratchpadEntry } from "./scratchpad.js";
 import { LockManager } from "./lock-manager.js";
 import { registerApiRoutes } from "./api-routes.js";
-import { arrangeTerminalWindows, detectQuadrantsFromWindowPositions } from "./arrange-windows.js";
+import { updateTerminalTitles, detectQuadrantsFromWindowPositions, positionWindowToQuadrant } from "./arrange-windows.js";
 import type { Collector } from "./collector.js";
 import { SuggestionEngine } from "./suggestion-engine.js";
 
@@ -813,10 +813,13 @@ export class TelemetryReceiver {
     return Array.from(this.workers.values());
   }
 
-  // Sticky quadrant assignments: worker_id → slot (1-4).
-  // Persists across scans. When a worker dies, its slot frees up.
-  // New workers get the lowest available slot.
+  // Position-driven quadrant assignments: worker_id → slot (1-4).
+  // Updated continuously from physical Terminal window positions.
   private quadrantAssignments = new Map<string, number>();
+  private lastPositionDetect = 0;
+  // Cache: context summaries per worker, invalidated when worker state changes
+  private contextCache = new Map<string, { fingerprint: string; context: WorkerContextSnapshot }>();
+  private static POSITION_DETECT_INTERVAL = 10_000; // 10s throttle
 
   writeWorkersFile(): void {
     const workers = this.getAll().sort((a, b) => a.startedAt - b.startedAt);
@@ -826,20 +829,46 @@ export class TelemetryReceiver {
       if (!this.workers.has(id)) this.quadrantAssignments.delete(id);
     }
 
-    // Detect new (unassigned) workers that need quadrant slots
-    const unassigned = workers.filter(w => !this.quadrantAssignments.has(w.id) && w.tty);
-    if (unassigned.length > 0) {
-      // Use physical window position to assign quadrants
-      const positionMap = detectQuadrantsFromWindowPositions(
-        unassigned.map(w => w.tty!),
-      );
+    // Fire off async position detection (throttled to every 10s).
+    // Results apply on the NEXT writeWorkersFile() cycle via callback.
+    const now = Date.now();
+    const workersWithTty = workers.filter(w => w.tty);
+    if (workersWithTty.length > 0 && now - this.lastPositionDetect >= TelemetryReceiver.POSITION_DETECT_INTERVAL) {
+      this.lastPositionDetect = now;
+      // Snapshot worker IDs+TTYs for the callback closure
+      const workerSnapshot = workersWithTty.map(w => ({ id: w.id, tty: w.tty! }));
+      const allWorkerSnapshot = workers.map(w => ({ id: w.id }));
 
-      for (const w of unassigned) {
-        const posQ = w.tty ? positionMap.get(w.tty) : undefined;
-        if (posQ && !new Set(this.quadrantAssignments.values()).has(posQ)) {
-          this.quadrantAssignments.set(w.id, posQ);
-        }
-      }
+      detectQuadrantsFromWindowPositions(
+        workerSnapshot.map(w => w.tty),
+        (positionMap) => {
+          if (positionMap.size === 0) return;
+
+          const newAssignments = new Map<string, number>();
+          const usedByPosition = new Set<number>();
+
+          for (const w of workerSnapshot) {
+            const posQ = positionMap.get(w.tty);
+            if (posQ && !usedByPosition.has(posQ)) {
+              newAssignments.set(w.id, posQ);
+              usedByPosition.add(posQ);
+            }
+          }
+
+          for (const w of allWorkerSnapshot) {
+            if (newAssignments.has(w.id)) continue;
+            const prev = this.quadrantAssignments.get(w.id);
+            if (prev && !usedByPosition.has(prev)) {
+              newAssignments.set(w.id, prev);
+              usedByPosition.add(prev);
+            }
+          }
+
+          this.quadrantAssignments = newAssignments;
+          // Re-write files immediately with updated assignments
+          this.writeWorkersFile();
+        },
+      );
     }
 
     // Fallback: assign any still-unassigned workers to lowest available slot
@@ -862,9 +891,26 @@ export class TelemetryReceiver {
       w.quadrant = q; // undefined if >4 workers
     }
 
-    const contexts = workers
-      .map((worker) => this.getWorkerContext(worker.id, { historyLimit: 6, artifactLimit: 5 }))
-      .filter((worker): worker is WorkerContextSnapshot => worker !== null);
+    // Use cached contexts — only rebuild when worker state changes.
+    // This avoids reading full JSONL files (can be hundreds of MB) every 3s.
+    const contexts: WorkerContextSnapshot[] = [];
+    for (const worker of workers) {
+      const fp = `${worker.lastActionAt}|${worker.status}|${worker.quadrant}|${worker.lastDirection?.slice(0, 50)}`;
+      const cached = this.contextCache.get(worker.id);
+      if (cached && cached.fingerprint === fp) {
+        contexts.push(cached.context);
+      } else {
+        const ctx = this.getWorkerContext(worker.id, { historyLimit: 6, artifactLimit: 5 });
+        if (ctx) {
+          this.contextCache.set(worker.id, { fingerprint: fp, context: ctx });
+          contexts.push(ctx);
+        }
+      }
+    }
+    // Prune dead workers from cache
+    for (const id of this.contextCache.keys()) {
+      if (!this.workers.has(id)) this.contextCache.delete(id);
+    }
     const contextsByWorker = new Map(contexts.map((context) => [context.workerId, context]));
 
     const slots: Array<{
@@ -900,8 +946,8 @@ export class TelemetryReceiver {
       );
     } catch { /* non-critical */ }
 
-    // Auto-arrange Terminal windows to match quadrant assignments
-    arrangeTerminalWindows(
+    // Update tab titles to match quadrant assignments (no window repositioning)
+    updateTerminalTitles(
       slots
         .filter(s => s.tty)
         .map(s => ({
@@ -911,6 +957,15 @@ export class TelemetryReceiver {
           model: s.model,
         }))
     );
+  }
+
+  /** Returns the lowest quadrant (1-4) not currently assigned, or undefined if full. */
+  getFirstOpenQuadrant(): number | undefined {
+    const used = new Set(this.quadrantAssignments.values());
+    for (let q = 1; q <= 4; q++) {
+      if (!used.has(q)) return q;
+    }
+    return undefined;
   }
 
   onUpdate(callback: (workerId: string, state: WorkerState) => void): void {
@@ -1131,6 +1186,126 @@ export class TelemetryReceiver {
       );
     }
     this.notifyExternal(worker);
+    return { ok: true };
+  }
+
+  /**
+   * Async version of sendToWorker — does NOT block the event loop for TTY sends.
+   * Use from WebSocket/API handlers where blocking kills responsiveness.
+   * State is updated optimistically before the async send completes.
+   */
+  async sendToWorkerAsync(
+    workerId: string,
+    content: string,
+    options: {
+      source: string;
+      lastAction?: string;
+      queueIfBusy?: boolean;
+      withIdentity?: boolean;
+      markDashboardInput?: boolean;
+      trackDispatch?: boolean;
+      taskBrief?: string;
+      taskId?: string;
+      workflowId?: string;
+      fromWorkerId?: string;
+      contextWorkerIds?: string[];
+      includeSenderContext?: boolean;
+    },
+  ): Promise<{ ok: true; queued?: boolean; id?: string; position?: number } | { ok: false; error: string }> {
+    const worker = this.get(workerId);
+    if (!worker) {
+      return { ok: false, error: `Worker ${workerId} not found` };
+    }
+
+    const contentWithContext = this.composeMessageWithContext(workerId, content, {
+      fromWorkerId: options.fromWorkerId,
+      contextWorkerIds: options.contextWorkerIds,
+      includeSenderContext: options.includeSenderContext,
+    });
+    const deliverableContent = worker.tty
+      ? this.prepareTtyPayload(worker, contentWithContext)
+      : contentWithContext;
+
+    let payload = deliverableContent;
+    if (options.withIdentity && worker.tty) {
+      const q = worker.quadrant;
+      const identity = q ? `[You are Q${q}, ${worker.tty}, ${worker.model || "claude"}] ` : "";
+      payload = identity + deliverableContent;
+    }
+
+    if (options.queueIfBusy !== false && worker.status === "working") {
+      const id = this.enqueueMessage(workerId, {
+        content,
+        source: options.source,
+        withIdentity: options.withIdentity,
+        lastAction: options.lastAction,
+        markDashboardInput: options.markDashboardInput,
+        trackDispatch: options.trackDispatch,
+        taskBrief: options.taskBrief,
+        taskId: options.taskId,
+        workflowId: options.workflowId,
+        fromWorkerId: options.fromWorkerId,
+        contextWorkerIds: options.contextWorkerIds,
+        includeSenderContext: options.includeSenderContext,
+      });
+      return {
+        ok: true,
+        queued: true,
+        id,
+        position: this.getMessageQueueSize(workerId),
+      };
+    }
+
+    // Optimistically update state BEFORE async send — dashboard sees
+    // the worker go green immediately, no waiting for AppleScript.
+    worker.status = "working";
+    worker.currentAction = "Thinking...";
+    worker.lastAction = options.lastAction || "Received message";
+    worker.lastActionAt = Date.now();
+    worker.stuckMessage = undefined;
+    this.idleConfirmed.set(workerId, false);
+    if (options.markDashboardInput) this.markDashboardInput(workerId);
+    this.markInputSent(workerId, options.source);
+    if (options.trackDispatch) {
+      this.trackDispatch(
+        workerId,
+        options.taskBrief || content.slice(0, 200),
+        options.taskId,
+        options.workflowId,
+        options.fromWorkerId,
+      );
+    }
+    this.notifyExternal(worker);
+
+    // Now do the actual send without blocking
+    let error: string | undefined;
+    if (worker.managed) {
+      if (!this.processManager) {
+        error = `Worker ${workerId} is managed, but no process manager is registered`;
+      } else {
+        const result = this.processManager.sendMessage(workerId, payload);
+        if (result.status === "error") {
+          error = result.error;
+        } else if (result.status === "not_found") {
+          error = `Worker ${workerId} not found`;
+        }
+      }
+    } else if (worker.tty) {
+      const result = await sendInputToTtyAsync(worker.tty, payload);
+      if (!result.ok) {
+        error = result.error || `Failed to send to ${worker.tty}`;
+      }
+    } else {
+      error = `Worker ${workerId} has no available input route`;
+    }
+
+    if (error) {
+      console.log(`[send-async] Error sending to ${workerId}: ${error}`);
+      // State was already updated optimistically — status detection will
+      // self-correct if the message truly didn't arrive.
+      return { ok: false, error };
+    }
+
     return { ok: true };
   }
 

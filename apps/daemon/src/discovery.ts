@@ -357,13 +357,23 @@ export class ProcessDiscovery {
       // New process — read JSONL for initial status
       const ctx = this.readSessionContext(proc.sessionIds, proc.cwd);
 
+      // If the process just started (< 30s ago) and the JSONL analysis returned
+      // low-confidence "working" (typically from the no-pattern fallback on a
+      // fresh file with only system/startup noise), override to idle. The agent
+      // is sitting at its idle prompt waiting for the first message — not working.
+      const processAge = Date.now() - proc.startedAt;
+      let initialStatus = ctx.status;
+      if (initialStatus === "working" && !ctx.highConfidence && processAge < 30_000) {
+        initialStatus = "idle";
+      }
+
       const worker: WorkerState = {
         id,
         pid: proc.pid,
         project: proc.project,
         projectName: ctx.projectName || proc.projectName,
-        status: ctx.status,
-        currentAction: ctx.status === "working" ? (ctx.latestAction || "Working...") : null,
+        status: initialStatus,
+        currentAction: initialStatus === "working" ? (ctx.latestAction || "Working...") : null,
         lastAction: ctx.latestAction || "Discovered on machine",
         lastActionAt: Date.now(),
         errorCount: 0,
@@ -378,12 +388,10 @@ export class ProcessDiscovery {
       this.telemetry.registerDiscovered(id, worker);
       this.discoveredPids.add(proc.pid);
 
-      // If the worker is already idle at discovery (e.g. daemon restart while
-      // agents are waiting for input), set idleConfirmed so the 120s grace
-      // period in runJsonlAnalysis doesn't phantom-green them. Without this,
-      // noise JSONL writes (file-history-snapshot) keep fileAge fresh and the
-      // grace fires, making an idle agent flash green every scan cycle.
-      if (ctx.status === "idle") {
+      // If the worker is idle at discovery (e.g. daemon restart while agents
+      // are waiting for input, or freshly spawned), set idleConfirmed so the
+      // 120s grace period in runJsonlAnalysis doesn't phantom-green them.
+      if (initialStatus === "idle") {
         this.telemetry.setIdleConfirmed(id, true);
       }
     }
@@ -598,14 +606,16 @@ export class ProcessDiscovery {
           if (ctx.latestAction) existing.lastAction = ctx.latestAction;
           this.checkTransition(id, tty, "idle", `JSONL tail idle, already idle (count=${idleCount}) cpu=${cpuPct.toFixed(1)}%`, tailCtx);
         }
-      } else if (ctx.fileAgeMs < 120_000 && idleCount < 2 && hookAge < 30_000) {
-        // File written in last 2 min AND first idle signal AND hooks recently
-        // active (<30s) — stay GREEN. All three conditions required:
+      } else if (ctx.fileAgeMs < 120_000 && idleCount < 2 && (hookAge < 30_000 || (existing.model && existing.model !== "claude"))) {
+        // File written in last 2 min AND first idle signal AND either hooks
+        // recently active OR non-Claude worker — stay GREEN.
         //   - fileAgeMs < 120s: covers subagent chains (30-90s JSONL gaps)
         //   - idleCount < 2: hysteresis prevents single-scan flapping
         //   - hookAge < 30s: ensures hooks confirm the agent is actually working.
-        //     Without this, noise JSONL writes (file-history-snapshot, system)
-        //     keep fileAge fresh even when idle → phantom green.
+        //     Without this, noise JSONL writes keep fileAge fresh → phantom green.
+        //   - Non-Claude (Codex): has no hooks, so hookAge is always stale.
+        //     JSONL freshness + hysteresis is sufficient — task_complete provides
+        //     high-confidence idle when actually done.
         existing.status = "working";
         existing.currentAction = ctx.latestAction || "Thinking...";
         existing.lastAction = ctx.latestAction || existing.lastAction;
@@ -613,16 +623,14 @@ export class ProcessDiscovery {
         this.checkTransition(id, tty, "working", `JSONL tail idle but fresh (${Math.round(ctx.fileAgeMs/1000)}s) hookAge=${Math.round(hookAge/1000)}s hysteresis=${idleCount}/2`, tailCtx);
       } else {
         // FIX 2 — Extended cooldown: 25s after last confirmed tool activity,
-        // keep green. Covers the gap where Claude is generating text after
-        // its last tool call (no hooks fire during text generation).
-        // Was 10s which was too aggressive — complex responses take 15-30s.
-        // Skip for non-Claude workers: they have no hooks, so JSONL is the
-        // definitive source. The cooldown bridges hook gaps that don't exist
-        // for Codex. Without this skip, Codex stays green 25s after finishing.
+        // keep green. Covers the API thinking gap where no JSONL is written.
+        // Applies to ALL models: Claude needs it for text generation after
+        // tool calls (no hooks fire), Codex needs it for API thinking between
+        // function_call sequences. For Codex, task_complete detection (high-
+        // confidence idle) overrides this cooldown immediately when done.
         const lastWorking = this.lastConfirmedWorking.get(id) || 0;
         const workingCooldown = Date.now() - lastWorking;
-        const hasHooks = existing.model === "claude" || !existing.model;
-        if (workingCooldown < 25_000 && existing.status === "working" && hasHooks) {
+        if (workingCooldown < 25_000 && existing.status === "working") {
           existing.currentAction = ctx.latestAction || "Thinking...";
           existing.lastAction = ctx.latestAction || existing.lastAction;
           existing.lastActionAt = Date.now();

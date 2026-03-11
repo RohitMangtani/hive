@@ -15,7 +15,9 @@ One screen for all your AI agents. Find My iPhone, but for Claude Code.
 
 The dashboard maps 1:1 to your terminal layout. Top-left terminal is top-left tile. Bottom-right terminal is bottom-right tile. Green means working. Red means done. Yellow means stuck. You look at your phone and know exactly which terminal needs attention without reading a single line of output.
 
-Open four terminals, run `claude` in each, and every agent appears on the dashboard in the order you opened them. Close one and the rest shift to fill the gap. Open a new one and it takes the next slot. The spatial mapping stays consistent so your muscle memory works. Q1 is always top-left. The agent in the top-left terminal is always the top-left tile on your phone.
+The daemon reads the physical position of each Terminal window on your screen and assigns quadrants to match. Move a terminal to the top-right corner, it becomes Q2 on the dashboard. The spatial mapping stays consistent because it tracks where your windows actually are, not what order you opened them. Q1 is always top-left. The agent in the top-left terminal is always the top-left tile on your phone.
+
+You can run 1, 2, 3, or 4 agents. Empty slots show "OFFLINE" on the dashboard. Run two agents side by side and the other two tiles stay greyed out until you need them.
 
 One person. Four agents. The output of a small team.
 
@@ -44,7 +46,8 @@ The quadrant layout solves this. Your brain is good at spatial memory. When you 
 ## What You Get
 
 - **Stoplight dashboard** — 2x2 grid that mirrors your terminal layout. Green/red/yellow at a glance. Open on your phone, tablet, or second monitor. The tile positions match your terminal positions.
-- **Auto-discovery** — start `claude` in any terminal and it appears on the dashboard within 3 seconds. First terminal opened becomes Q1. Second becomes Q2. No registration, no config.
+- **Multi-model** — run Claude and Codex agents side by side. Each tile shows which model is running. Spawn either from the dashboard.
+- **Auto-discovery** — start `claude` or `codex` in any terminal and it appears on the dashboard within 3 seconds. Quadrants are assigned by where the terminal sits on your screen, not by start order. No registration, no config.
 - **Auto-pilot** — permission prompts auto-approve after a 3-second grace window. Agents never sit idle waiting for a click.
 - **Messaging** — tap any tile, type a message, it goes straight to that agent's terminal. Messages queue if the agent is busy and drain automatically when it is ready.
 - **Coordination** — file locks, task queue, scratchpad, conflict detection. Multiple agents working on the same codebase without stepping on each other.
@@ -58,6 +61,7 @@ The quadrant layout solves this. Your brain is good at spatial memory. When you 
 - **macOS** (uses AppleScript + CGEvent for terminal interaction)
 - **Node.js 20+** — [nodejs.org](https://nodejs.org)
 - **Claude Code** — `npm install -g @anthropic-ai/claude-code`
+- **Codex** (optional) — `npm install -g @openai/codex` if you want to run Codex agents alongside Claude
 
 ## Setup
 
@@ -101,12 +105,16 @@ npm run dev:dashboard
 ```
 Opens at `localhost:3000`.
 
-**3. Agents** (open 4 Terminal.app tabs, run `claude` in each)
+**3. Agents** (open Terminal.app windows, run `claude` or `codex` in each)
 ```bash
 claude
 ```
+or
+```bash
+codex
+```
 
-The daemon auto-discovers agents within 3 seconds. The dashboard shows their status.
+Arrange your terminal windows in a 2x2 grid on screen. The daemon detects their positions and maps each one to the matching tile on the dashboard. You can also spawn agents directly from the dashboard by tapping an empty "OFFLINE" tile.
 
 **4. Install the app on your phone** (optional, recommended)
 
@@ -123,13 +131,14 @@ Open the dashboard URL on your phone and add it to your home screen. It runs ful
 ## How It Works
 
 ### Auto-Discovery
-Detects Claude processes within 3 seconds via `ps` + `lsof`. No configuration needed. Start `claude` in any terminal and the daemon finds it.
+Detects Claude and Codex processes within 3 seconds via `ps` + `lsof`. No configuration needed. Start `claude` or `codex` in any terminal and the daemon finds it. The daemon reads the physical position of each Terminal window on your screen every 10 seconds and assigns quadrants to match. If you drag a terminal from top-left to bottom-right, it becomes Q4 on the dashboard within 10 seconds. Tab titles update automatically to show which quadrant each terminal is.
 
 ### Status Tracking
-Three-layer detection pipeline determines real-time status:
-1. **Hook events** — Claude Code hooks report every tool call to the daemon
-2. **JSONL analysis** — reads the agent's conversation log for recent activity, extracts the last user message as a direction summary
-3. **CPU signal** — falls back to CPU usage (>8% = working) when hooks are delayed
+Multi-layer detection pipeline determines real-time status:
+1. **Hook events** — Claude Code hooks report every tool call to the daemon (Claude agents)
+2. **JSONL analysis** — reads the agent's conversation log for recent activity, extracts the last user message as a direction summary (Claude and Codex)
+3. **CPU signal** — falls back to CPU usage (>8% = working) when hooks are delayed (all agents)
+4. **PTY output** — detects terminal output flow for agents actively generating text
 
 ### Auto-Pilot
 Auto-approves permission prompts so agents never sit idle waiting for you. The daemon detects when an agent is stuck on a prompt, waits a 3-second grace window (so you can override from the dashboard), then sends a Return keystroke via the `send-return` binary.
@@ -295,9 +304,10 @@ Setup generates a random token at `~/.hive/token`. All API requests require this
 
 ```
 Daemon (Node.js, port 3001 + 3002)
-├── Discovery     — finds Claude processes via ps + lsof every 3s
+├── Discovery     — finds Claude + Codex processes via ps + lsof every 3s
 ├── Telemetry     — receives hook events, maintains worker state
 ├── Auto-pilot    — detects stuck prompts, auto-approves via send-return
+├── Arrange       — detects terminal positions, assigns quadrants by screen location
 ├── Watchdog      — detects stuck loops, escalates to dashboard
 ├── State store   — snapshots daemon state every 30s, restores on restart
 ├── Notifications — macOS native alerts when agents go stuck
@@ -322,6 +332,7 @@ Dashboard (Next.js, port 3000 — installable as PWA)
 | `apps/daemon/src/telemetry.ts` | Hook event receiver, worker state machine |
 | `apps/daemon/src/auto-pilot.ts` | Automatic prompt approval |
 | `apps/daemon/src/tty-input.ts` | AppleScript + CGEvent terminal interaction |
+| `apps/daemon/src/arrange-windows.ts` | Window position detection and quadrant assignment |
 | `apps/daemon/src/api-routes.ts` | All REST API endpoints |
 | `apps/daemon/src/ws-server.ts` | WebSocket server for dashboard |
 | `apps/daemon/src/watchdog.ts` | Stuck loop detection |

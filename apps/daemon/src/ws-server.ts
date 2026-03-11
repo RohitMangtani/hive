@@ -75,9 +75,7 @@ export class WsServer {
 
       this.clients.add(ws);
       if (!isAdmin) this.readOnlyClients.add(ws);
-      // Ensure quadrants are stamped before sending initial state
-      this.telemetry.writeWorkersFile();
-      // Send current workers list — viewers get this too (the whole point)
+      // Send current workers list — quadrants are already stamped by the 3s tick loop.
       this.send(ws, { type: "workers", workers: this.telemetry.getAll() });
       this.send(ws, { type: "auth", admin: isAdmin });
 
@@ -198,9 +196,10 @@ export class WsServer {
         }
 
         const model = (msg.model === "codex" ? "codex" : "claude") as "claude" | "codex";
+        const openQ = this.telemetry.getFirstOpenQuadrant();
 
-        // Open a real Terminal window with the CLI (discovery will pick it up)
-        const termResult = spawnTerminalWindow(real, model);
+        // Open a real Terminal window with the CLI, positioned in the first open corner
+        const termResult = spawnTerminalWindow(real, model, openQ);
         if (!termResult.ok) {
           this.send(ws, { type: "error", error: termResult.error || "Failed to spawn terminal" });
           return;
@@ -240,22 +239,21 @@ export class WsServer {
           contextWorkerIds?: string[];
           includeSenderContext?: boolean;
         };
-        const result = this.telemetry.sendToWorker(msg.workerId, msg.content, {
+        // Async send — does NOT block the event loop. Dashboard stays responsive.
+        this.telemetry.sendToWorkerAsync(msg.workerId, msg.content, {
           source: "dashboard",
           queueIfBusy: false,
           markDashboardInput: true,
           fromWorkerId: extra.from,
           contextWorkerIds: extra.contextWorkerIds,
           includeSenderContext: extra.includeSenderContext,
+        }).then((result) => {
+          if (!result.ok) {
+            this.send(ws, { type: "error", error: result.error });
+          } else if (!result.queued) {
+            this.streamer.nudge(msg.workerId!);
+          }
         });
-        if (!result.ok) {
-          this.send(ws, {
-            type: "error",
-            error: result.error,
-          });
-        } else if (!result.queued) {
-          this.streamer.nudge(msg.workerId);
-        }
         break;
       }
 

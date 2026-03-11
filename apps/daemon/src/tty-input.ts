@@ -1,9 +1,11 @@
 import { execFileSync, execFile } from "child_process";
+import { promisify } from "util";
 import { writeFileSync, unlinkSync } from "fs";
 import { randomBytes } from "crypto";
 import { join } from "path";
 import { homedir, tmpdir } from "os";
 
+const execFileAsync = promisify(execFile);
 const SEND_RETURN_BIN = process.env.SEND_RETURN_BIN || join(homedir(), "send-return");
 
 /**
@@ -163,6 +165,18 @@ function getFrontmostApp(): string | null {
   }
 }
 
+async function getFrontmostAppAsync(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/osascript", ["-e",
+      'tell application "System Events" to return bundle identifier of first application process whose frontmost is true'
+    ], { timeout: 2000, encoding: "utf-8" });
+    const bid = (stdout as string).trim();
+    return bid && bid !== "com.apple.Terminal" ? bid : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Restore focus to the app that was frontmost before we activated Terminal.
  * Fire-and-forget — if it fails, the user just stays on Terminal (no worse than before).
@@ -175,6 +189,14 @@ function restoreFrontmostApp(bundleId: string): void {
   } catch {
     // Non-critical — worst case user stays on Terminal (current behavior)
   }
+}
+
+function restoreFrontmostAppAsync(bundleId: string): void {
+  execFile("/usr/bin/osascript", ["-e",
+    `tell application id "${bundleId}" to activate`
+  ], { timeout: 2000, encoding: "utf-8" }, () => {
+    // Non-critical — worst case user stays on Terminal
+  });
 }
 
 /**
@@ -260,6 +282,82 @@ end tell
 
   // Step 3: Restore focus to the app that was frontmost before Terminal
   if (previousApp) restoreFrontmostApp(previousApp);
+
+  return { ok: true };
+}
+
+/**
+ * Async version of sendInputToTty — same two-step approach (do script + send-return)
+ * but does NOT block the Node.js event loop. WebSocket messages, status updates,
+ * and other requests continue flowing while the AppleScript executes.
+ */
+export async function sendInputToTtyAsync(tty: string, text: string): Promise<{ ok: boolean; error?: string }> {
+  const device = tty.startsWith("/dev/") ? tty : `/dev/${tty}`;
+
+  const cleaned = text.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned) return { ok: false, error: "Empty message" };
+
+  const tmpFile = join(tmpdir(), `hive-input-${randomBytes(8).toString("hex")}.txt`);
+  try {
+    writeFileSync(tmpFile, cleaned, { encoding: "utf-8", mode: 0o600 });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Write tmp failed: ${msg.slice(0, 150)}` };
+  }
+
+  const previousApp = await getFrontmostAppAsync();
+
+  const script = `
+tell application "Terminal"
+  set payload to read POSIX file "${tmpFile}" as «class utf8»
+  set targetTTY to "${device}"
+  set targetTab to missing value
+  set targetWin to missing value
+  repeat with w in windows
+    repeat with t in tabs of w
+      if tty of t is targetTTY then
+        set targetTab to t
+        set targetWin to w
+        exit repeat
+      end if
+    end repeat
+    if targetTab is not missing value then exit repeat
+  end repeat
+  if targetTab is missing value then error "TTY not found in Terminal.app"
+  do script payload in targetTab
+  set selected of targetTab to true
+  set index of targetWin to 1
+  activate
+end tell
+`;
+
+  try {
+    await execFileAsync("/usr/bin/osascript", ["-e", script], {
+      timeout: 15000,
+      encoding: "utf-8",
+    });
+  } catch (err: unknown) {
+    cleanup(tmpFile);
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Type failed: ${msg.slice(0, 180)}` };
+  }
+
+  cleanup(tmpFile);
+
+  // Step 2: Send Return keystroke via CGEvent
+  try {
+    await execFileAsync(SEND_RETURN_BIN, [], {
+      timeout: 3000,
+      encoding: "utf-8",
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (previousApp) restoreFrontmostAppAsync(previousApp);
+    return { ok: false, error: `Enter failed: ${msg.slice(0, 180)}` };
+  }
+
+  // Step 3: Restore focus (fire-and-forget, non-blocking)
+  if (previousApp) restoreFrontmostAppAsync(previousApp);
 
   return { ok: true };
 }

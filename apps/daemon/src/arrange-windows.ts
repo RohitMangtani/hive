@@ -1,4 +1,4 @@
-import { execFileSync } from "child_process";
+import { execFile, execFileSync } from "child_process";
 
 interface QuadrantSlot {
   quadrant: number;
@@ -17,6 +17,7 @@ const QUADRANT_POSITIONS: Record<number, { x: number; y: number }> = {
 
 // Track last arrangement to avoid redundant AppleScript calls
 let lastArrangement = "";
+let lastTitleFingerprint = "";
 
 /**
  * Detect the physical screen position of each Terminal window by TTY
@@ -25,10 +26,24 @@ let lastArrangement = "";
  *
  * Returns a Map<tty, quadrant>. TTYs whose window can't be found are omitted.
  */
-export function detectQuadrantsFromWindowPositions(ttys: string[]): Map<string, number> {
-  if (ttys.length === 0) return new Map();
+// Guard: only one detect at a time
+let detectInFlight = false;
 
-  // Build AppleScript that collects { tty, x, y } for each window's center point
+/**
+ * Detect the physical screen position of each Terminal window by TTY
+ * and invoke the callback with the quadrant assignments.
+ *
+ * Async — does NOT block the event loop. Results arrive via callback.
+ * If a detection is already in flight, the call is skipped (callback not invoked).
+ */
+export function detectQuadrantsFromWindowPositions(
+  ttys: string[],
+  callback: (result: Map<string, number>) => void,
+): void {
+  if (ttys.length === 0) return;
+  if (detectInFlight) return;
+  detectInFlight = true;
+
   const ttyChecks = ttys.map(tty => {
     const device = tty.startsWith("/dev/") ? tty : `/dev/${tty}`;
     return `
@@ -66,23 +81,27 @@ end repeat
 return "SCREEN:" & midX & "," & midY & linefeed & output
 `;
 
-  try {
-    const raw = execFileSync("/usr/bin/osascript", ["-e", script], {
-      timeout: 8000,
-      encoding: "utf-8",
-    }).trim();
+  execFile("/usr/bin/osascript", ["-e", script], {
+    timeout: 8000,
+    encoding: "utf-8",
+  }, (err, stdout) => {
+    detectInFlight = false;
+    if (err) {
+      const msg = err.message || String(err);
+      console.log(`[arrange] Failed to detect window positions: ${msg.slice(0, 150)}`);
+      return;
+    }
 
+    const raw = (stdout as string).trim();
     const lines = raw.split("\n").map(l => l.trim()).filter(Boolean);
-    if (lines.length === 0) return new Map();
+    if (lines.length === 0) return;
 
-    // Parse screen midpoint
     const screenLine = lines.find(l => l.startsWith("SCREEN:"));
-    if (!screenLine) return new Map();
+    if (!screenLine) return;
     const [midXStr, midYStr] = screenLine.replace("SCREEN:", "").split(",");
     const midX = parseFloat(midXStr);
     const midY = parseFloat(midYStr);
 
-    // Parse each TTY's center position
     const positions: Array<{ tty: string; cx: number; cy: number }> = [];
     for (const line of lines) {
       if (line.startsWith("SCREEN:")) continue;
@@ -95,11 +114,9 @@ return "SCREEN:" & midX & "," & midY & linefeed & output
       });
     }
 
-    // Assign quadrant based on position relative to screen center
     const result = new Map<string, number>();
     const usedQuadrants = new Set<number>();
 
-    // Sort by distance to each quadrant corner to resolve conflicts
     for (const pos of positions) {
       const isLeft = pos.cx < midX;
       const isTop = pos.cy < midY;
@@ -109,7 +126,6 @@ return "SCREEN:" & midX & "," & midY & linefeed & output
       else if (!isTop && isLeft) q = 3;
       else q = 4;
 
-      // If quadrant already taken, find nearest free one
       if (usedQuadrants.has(q)) {
         const free = [1, 2, 3, 4].filter(n => !usedQuadrants.has(n));
         if (free.length === 0) continue;
@@ -119,12 +135,8 @@ return "SCREEN:" & midX & "," & midY & linefeed & output
       usedQuadrants.add(q);
     }
 
-    return result;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.log(`[arrange] Failed to detect window positions: ${msg.slice(0, 150)}`);
-    return new Map();
-  }
+    callback(result);
+  });
 }
 
 /**
@@ -196,40 +208,158 @@ ${tabBlocks}
 end tell
 `;
 
+  execFile("/usr/bin/osascript", ["-e", script], {
+    timeout: 10000,
+    encoding: "utf-8",
+  }, (err) => {
+    if (err) {
+      const msg = err.message || String(err);
+      console.log(`[arrange] Failed to arrange windows: ${msg.slice(0, 150)}`);
+    }
+  });
+}
+
+// Guard: only one title update at a time
+let titleInFlight = false;
+
+/**
+ * Set Terminal.app tab titles to match quadrant assignments WITHOUT moving windows.
+ * Called on every writeWorkersFile() tick so labels stay in sync when windows are dragged.
+ * Async (fire-and-forget) — does NOT block the event loop.
+ */
+export function updateTerminalTitles(slots: QuadrantSlot[]): void {
+  if (slots.length === 0) return;
+  if (titleInFlight) return; // skip if previous call still running
+
+  const fingerprint = slots
+    .map(s => `${s.quadrant}:${s.tty}:${s.projectName}`)
+    .sort()
+    .join("|");
+  if (fingerprint === lastTitleFingerprint) return;
+  lastTitleFingerprint = fingerprint;
+
+  const tabBlocks = slots.map(slot => {
+    const device = slot.tty.startsWith("/dev/") ? slot.tty : `/dev/${slot.tty}`;
+    const title = `Q${slot.quadrant} - ${slot.projectName}`;
+    return `
+    repeat with w in windows
+      repeat with t in tabs of w
+        if tty of t is "${device}" then
+          set custom title of t to "${title}"
+          set title displays custom title of t to true
+          exit repeat
+        end if
+      end repeat
+    end repeat`;
+  }).filter(Boolean).join("\n");
+
+  if (!tabBlocks) return;
+
+  const script = `
+tell application "Terminal"
+${tabBlocks}
+end tell
+`;
+
+  titleInFlight = true;
+  execFile("/usr/bin/osascript", ["-e", script], {
+    timeout: 8000,
+    encoding: "utf-8",
+  }, (err) => {
+    titleInFlight = false;
+    if (err) {
+      const msg = err.message || String(err);
+      console.log(`[arrange] Failed to update titles: ${msg.slice(0, 150)}`);
+    }
+  });
+}
+
+/**
+ * Position a single Terminal window to the given quadrant.
+ * Used only on spawn to place new windows in an open corner.
+ */
+export function positionWindowToQuadrant(tty: string, quadrant: number): void {
+  const pos = QUADRANT_POSITIONS[quadrant];
+  if (!pos) return;
+  const device = tty.startsWith("/dev/") ? tty : `/dev/${tty}`;
+
+  const script = `
+tell application "Finder"
+  set screenBounds to bounds of window of desktop
+  set screenX to item 1 of screenBounds
+  set screenY to item 2 of screenBounds
+  set screenW to item 3 of screenBounds
+  set screenH to item 4 of screenBounds
+end tell
+set menuBarH to 25
+set halfW to (screenW - screenX) / 2
+set halfH to (screenH - screenY - menuBarH) / 2
+
+tell application "Terminal"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if tty of t is "${device}" then
+        set bounds of w to {screenX + ${pos.x} * halfW, screenY + ${pos.y} * halfH + menuBarH, screenX + ${pos.x} * halfW + halfW, screenY + ${pos.y} * halfH + halfH + menuBarH}
+        exit repeat
+      end if
+    end repeat
+  end repeat
+end tell
+`;
+
   try {
     execFileSync("/usr/bin/osascript", ["-e", script], {
-      timeout: 10000,
+      timeout: 8000,
       encoding: "utf-8",
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.log(`[arrange] Failed to arrange windows: ${msg.slice(0, 150)}`);
+    console.log(`[arrange] Failed to position window: ${msg.slice(0, 150)}`);
   }
 }
 
 /**
  * Open a new Terminal.app window, cd to the project, and run the model CLI.
+ * Positions the window into the specified quadrant (or first open one).
  *
  * - claude: types `claude` then sends keystroke "1" (to select option 1 from the menu)
  * - codex: types `codex`
- *
- * Returns the TTY of the new tab (not reliably available immediately, so returns null).
  */
 export function spawnTerminalWindow(
   project: string,
   model: "claude" | "codex",
+  targetQuadrant?: number,
 ): { ok: boolean; error?: string } {
-  // For claude: `cd <project> && claude` then press "1"
-  // For codex: `cd <project> && codex`
   const cdCmd = `cd "${project}"`;
   const launchCmd = model === "claude"
     ? `${cdCmd} && claude`
     : `${cdCmd} && codex`;
 
+  // If a target quadrant is given, spawn and position in one AppleScript call
+  const pos = targetQuadrant ? QUADRANT_POSITIONS[targetQuadrant] : undefined;
+  const positionBlock = pos ? `
+tell application "Finder"
+  set screenBounds to bounds of window of desktop
+  set screenX to item 1 of screenBounds
+  set screenY to item 2 of screenBounds
+  set screenW to item 3 of screenBounds
+  set screenH to item 4 of screenBounds
+end tell
+set menuBarH to 25
+set halfW to (screenW - screenX) / 2
+set halfH to (screenH - screenY - menuBarH) / 2
+` : "";
+
+  const setBoundsLine = pos
+    ? `set bounds of front window to {screenX + ${pos.x} * halfW, screenY + ${pos.y} * halfH + menuBarH, screenX + ${pos.x} * halfW + halfW, screenY + ${pos.y} * halfH + halfH + menuBarH}`
+    : "";
+
   const script = `
+${positionBlock}
 tell application "Terminal"
   do script "${launchCmd.replace(/"/g, '\\"')}"
   activate
+  ${setBoundsLine}
 end tell
 `;
 
