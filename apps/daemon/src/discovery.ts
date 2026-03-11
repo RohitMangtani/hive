@@ -178,7 +178,11 @@ export class ProcessDiscovery {
       } else {
         // Priority 0: content-based match (ground truth from identity hook in JSONL).
         // Overrides all heuristics because it matches TTY↔file using actual content.
-        if (proc.tty) {
+        // Skip for Codex workers: markers in ~/.hive/sessions/ are written by Claude's
+        // identity.sh hook, which never fires for Codex. Any marker found for a Codex
+        // worker's TTY is stale from a previous Claude session — using it would map
+        // the wrong chat history (the old Claude session instead of the current Codex one).
+        if (proc.tty && proc.model !== "codex") {
           const contentMatch = ttyToFile.get(proc.tty);
           if (contentMatch && !claimedFiles.has(contentMatch)) {
             sessionFile = contentMatch;
@@ -191,6 +195,17 @@ export class ProcessDiscovery {
           // Never use "most recently modified in cwd dir" — when multiple workers
           // share the same cwd (e.g. home dir), it picks the wrong worker's file.
           sessionFile = proc.jsonlFile; // Direct from lsof — most reliable
+
+          // For Codex workers, search ~/.codex/sessions/ BEFORE Claude heuristics.
+          // Codex uses appendFileSync (open+close instantly) so lsof rarely catches
+          // the JSONL handle. Without this, Claude heuristics (findSessionFile,
+          // findBestJsonlFile, findSessionFileByStartTime) search .claude/projects/
+          // and can grab a stale Claude JSONL whose birthtime is close to the Codex
+          // process start — causing cross-contamination of chat history.
+          if (!sessionFile && proc.model === "codex") {
+            sessionFile = this.findCodexSessionFile(proc.pid, proc.startedAt);
+          }
+
           if (!sessionFile && proc.sessionIds.length > 0) {
             sessionFile = this.streamer.findSessionFile(proc.sessionIds);
             if (!sessionFile) {
@@ -204,10 +219,6 @@ export class ProcessDiscovery {
           // start within seconds (birthtimes cluster within 1-2s).
           if (!sessionFile) {
             sessionFile = this.findSessionFileByStartTime(proc.cwd, proc.startedAt, claimedFiles);
-          }
-          // Codex fallback: search ~/.codex/sessions/ by birthtime
-          if (!sessionFile && proc.model === "codex") {
-            sessionFile = this.findCodexSessionFile(proc.pid, proc.startedAt);
           }
         }
 
@@ -540,6 +551,19 @@ export class ProcessDiscovery {
       const idleCount = (this.consecutiveIdleChecks.get(id) || 0) + 1;
       this.consecutiveIdleChecks.set(id, idleCount);
 
+      // High-confidence idle (e.g. Codex task_complete) — immediate transition,
+      // bypass all cooldowns and hysteresis. This is a definitive "done" signal.
+      if (ctx.highConfidence) {
+        if (ctx.latestAction) existing.lastAction = ctx.latestAction;
+        existing.status = "idle";
+        existing.currentAction = null;
+        this.consecutiveIdleChecks.set(id, 0);
+        this.consecutiveActiveChecks.set(id, 0);
+        this.telemetry.setIdleConfirmed(id, true);
+        this.checkTransition(id, tty, "idle", `JSONL tail high-confidence idle (${existing.model || "claude"})`, tailCtx);
+        return;
+      }
+
       // If already idle (e.g. hooks set it), don't override to working
       // just because the file is fresh. The "idle but fresh" grace only
       // applies when we're currently working and unsure if we should go idle.
@@ -774,9 +798,11 @@ export class ProcessDiscovery {
                     const fullPath = join(dayDir, file);
                     try {
                       const stat = statSync(fullPath);
-                      // Birthtime matching: JSONL created close to process start
+                      // Birthtime matching: JSONL created close to process start.
+                      // Codex can take 60-90s to create its session file after the
+                      // process starts, so use a 120s window (was 60s — too tight).
                       const birthtimeDiff = Math.abs(stat.birthtimeMs - startedAt);
-                      if (birthtimeDiff < 60_000 && birthtimeDiff < bestBirthtimeDiff) {
+                      if (birthtimeDiff < 120_000 && birthtimeDiff < bestBirthtimeDiff) {
                         bestBirthtimeDiff = birthtimeDiff;
                         bestFile = fullPath;
                         bestMtime = stat.mtimeMs;
@@ -1336,6 +1362,15 @@ export class ProcessDiscovery {
       for (let i = lines.length - 1; i >= Math.max(0, lines.length - 20); i--) {
         const line = lines[i];
 
+        // Codex: task_complete is a definitive "done" signal — immediate idle.
+        // No cooldown or hysteresis needed. This is the strongest idle indicator.
+        if (line.includes('"task_complete"')) {
+          result.status = "idle";
+          result.highConfidence = true;
+          foundAnyPattern = true;
+          return result;
+        }
+
         // Pattern 1: tool in flight (tool_use/function_call without result after it)
         // Claude: "tool_result" | Codex: "function_call_output"
         if (line.includes('"tool_result"') || line.includes('"function_call_output"')) {
@@ -1358,9 +1393,10 @@ export class ProcessDiscovery {
         // Pattern 2: thinking — track last message type
         // Claude: "type":"user" / "type":"assistant"
         // Codex: "type":"user_message" (event_msg) / "role":"assistant" (response_item)
+        // Skip Codex "agent_message" events — they accompany assistant responses, not user input.
         if (!lastUser && !lastAssistant) {
-          if (line.includes('"type":"user"') || line.includes('"type": "user"') ||
-              line.includes('"type":"user_message"') || line.includes('"type":"event_msg"')) {
+          if ((line.includes('"type":"user"') || line.includes('"type": "user"') ||
+              line.includes('"type":"user_message"')) && !line.includes('"agent_message"')) {
             lastUser = true;
             foundAnyPattern = true;
           } else if (line.includes('"type":"assistant"') || line.includes('"type": "assistant"') ||

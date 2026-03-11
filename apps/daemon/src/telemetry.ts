@@ -17,6 +17,7 @@ import { Scratchpad } from "./scratchpad.js";
 import type { ScratchpadEntry } from "./scratchpad.js";
 import { LockManager } from "./lock-manager.js";
 import { registerApiRoutes } from "./api-routes.js";
+import { arrangeTerminalWindows, detectQuadrantsFromWindowPositions } from "./arrange-windows.js";
 import type { Collector } from "./collector.js";
 import { SuggestionEngine } from "./suggestion-engine.js";
 
@@ -825,7 +826,23 @@ export class TelemetryReceiver {
       if (!this.workers.has(id)) this.quadrantAssignments.delete(id);
     }
 
-    // Assign slots to new workers (lowest available)
+    // Detect new (unassigned) workers that need quadrant slots
+    const unassigned = workers.filter(w => !this.quadrantAssignments.has(w.id) && w.tty);
+    if (unassigned.length > 0) {
+      // Use physical window position to assign quadrants
+      const positionMap = detectQuadrantsFromWindowPositions(
+        unassigned.map(w => w.tty!),
+      );
+
+      for (const w of unassigned) {
+        const posQ = w.tty ? positionMap.get(w.tty) : undefined;
+        if (posQ && !new Set(this.quadrantAssignments.values()).has(posQ)) {
+          this.quadrantAssignments.set(w.id, posQ);
+        }
+      }
+    }
+
+    // Fallback: assign any still-unassigned workers to lowest available slot
     const usedSlots = new Set(this.quadrantAssignments.values());
     for (const w of workers) {
       if (this.quadrantAssignments.has(w.id)) continue;
@@ -882,6 +899,18 @@ export class TelemetryReceiver {
         JSON.stringify({ updatedAt: Date.now(), workers: contexts }, null, 2) + "\n"
       );
     } catch { /* non-critical */ }
+
+    // Auto-arrange Terminal windows to match quadrant assignments
+    arrangeTerminalWindows(
+      slots
+        .filter(s => s.tty)
+        .map(s => ({
+          quadrant: s.quadrant,
+          tty: s.tty!,
+          projectName: s.projectName,
+          model: s.model,
+        }))
+    );
   }
 
   onUpdate(callback: (workerId: string, state: WorkerState) => void): void {
@@ -1827,13 +1856,10 @@ export class TelemetryReceiver {
       console.log(`[state-store] Restored ${Object.keys(snapshot.ttySessionMap).length} TTY→session mapping(s)`);
     }
 
-    // Restore sticky quadrant assignments so slots are preserved across restarts
-    if (snapshot.quadrantAssignments) {
-      for (const [id, q] of Object.entries(snapshot.quadrantAssignments)) {
-        this.quadrantAssignments.set(id, q);
-      }
-      console.log(`[state-store] Restored ${Object.keys(snapshot.quadrantAssignments).length} quadrant assignment(s)`);
-    }
+    // Don't restore quadrant assignments — let position detection re-assign
+    // based on actual window positions. This ensures swapped/moved windows
+    // get correct quadrants after a daemon restart.
+    console.log(`[state-store] Skipping quadrant restore — will re-detect from window positions`);
 
     console.log(`[state-store] Restored ${workerCount} worker(s), ${Object.keys(snapshot.messageQueue).length} queue(s), ${snapshot.locks.length} lock(s)`);
   }

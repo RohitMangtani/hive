@@ -12,27 +12,32 @@ const DEFAULT_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3002";
 const MAX_SLOTS = 4;
 
 /**
- * Fixed 4-slot numbering with slot recycling.
- * Workers get assigned to slots 1-4. When a worker dies, its slot
- * frees up for the next new worker. Workers beyond 4 are ignored.
+ * Use server-provided quadrant assignments (single source of truth from daemon).
+ * Falls back to startedAt sorting only if server hasn't assigned quadrants yet.
  */
 function useStableNumbering(workers: Map<string, WorkerState>) {
-  const assignmentRef = useRef<Map<string, number>>(new Map());
+  const fallbackRef = useRef<Map<string, number>>(new Map());
 
   return useMemo(() => {
-    const assignments = assignmentRef.current;
+    const sorted = Array.from(workers.values()).sort((a, b) => a.startedAt - b.startedAt);
 
+    // If server provides quadrant assignments, use them directly
+    const hasServerQuadrants = sorted.some((w) => w.quadrant != null);
+    if (hasServerQuadrants) {
+      return sorted
+        .filter((w) => w.quadrant != null && w.quadrant >= 1 && w.quadrant <= MAX_SLOTS)
+        .sort((a, b) => a.quadrant! - b.quadrant!)
+        .map((w) => ({ worker: w, num: w.quadrant! }));
+    }
+
+    // Fallback: client-side assignment (only before first server broadcast with quadrants)
+    const assignments = fallbackRef.current;
     for (const id of assignments.keys()) {
       if (!workers.has(id)) assignments.delete(id);
     }
-
     const usedSlots = new Set(assignments.values());
-
-    const sorted = Array.from(workers.values()).sort((a, b) => a.startedAt - b.startedAt);
-
     for (const w of sorted) {
       if (assignments.has(w.id)) continue;
-
       for (let slot = 1; slot <= MAX_SLOTS; slot++) {
         if (!usedSlots.has(slot)) {
           assignments.set(w.id, slot);
@@ -41,7 +46,6 @@ function useStableNumbering(workers: Map<string, WorkerState>) {
         }
       }
     }
-
     return sorted
       .filter((w) => assignments.has(w.id))
       .sort((a, b) => assignments.get(a.id)! - assignments.get(b.id)!)
@@ -356,8 +360,8 @@ export default function Home() {
 
       {showSpawn && (
         <SpawnDialog
-          onSpawn={(project, task) => {
-            send({ type: "spawn", project, task });
+          onSpawn={(project, task, model) => {
+            send({ type: "spawn", project, task, model });
             setShowSpawn(false);
           }}
           onClose={() => setShowSpawn(false)}

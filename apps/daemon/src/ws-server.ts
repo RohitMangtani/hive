@@ -6,6 +6,7 @@ import type { TelemetryReceiver } from "./telemetry.js";
 import type { ProcessManager } from "./process-mgr.js";
 import type { SessionStreamer } from "./session-stream.js";
 import { sendSelectionToTty } from "./tty-input.js";
+import { spawnTerminalWindow } from "./arrange-windows.js";
 import { validateToken } from "./auth.js";
 import type { DaemonMessage, DaemonResponse } from "./types.js";
 
@@ -74,6 +75,8 @@ export class WsServer {
 
       this.clients.add(ws);
       if (!isAdmin) this.readOnlyClients.add(ws);
+      // Ensure quadrants are stamped before sending initial state
+      this.telemetry.writeWorkersFile();
       // Send current workers list — viewers get this too (the whole point)
       this.send(ws, { type: "workers", workers: this.telemetry.getAll() });
       this.send(ws, { type: "auth", admin: isAdmin });
@@ -193,12 +196,23 @@ export class WsServer {
           this.send(ws, { type: "error", error: "Invalid project path" });
           return;
         }
-        const workerId = this.procMgr.spawn(real, msg.task || null);
+
+        const model = (msg.model === "codex" ? "codex" : "claude") as "claude" | "codex";
+
+        // Open a real Terminal window with the CLI (discovery will pick it up)
+        const termResult = spawnTerminalWindow(real, model);
+        if (!termResult.ok) {
+          this.send(ws, { type: "error", error: termResult.error || "Failed to spawn terminal" });
+          return;
+        }
+
+        // Discovery will detect the new process on its next scan cycle.
+        // Send current workers back; the new one will appear after discovery runs.
         this.send(ws, {
           type: "workers",
           workers: this.telemetry.getAll(),
         });
-        console.log(`Spawned worker ${workerId} for ${msg.project}`);
+        console.log(`Spawned ${model} terminal for ${msg.project}`);
         break;
       }
 

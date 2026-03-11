@@ -23,6 +23,8 @@ export interface WorkerState {
   suggestions?: Suggestion[];
   /** Which AI tool this worker is running (e.g. "claude", "codex"). Defaults to "claude". */
   model?: string;
+  /** Server-assigned quadrant (1-4). Dashboard should use this for slot ordering. */
+  quadrant?: number;
 }
 
 export interface TelemetryEvent {
@@ -47,6 +49,8 @@ export interface DaemonMessage {
   project?: string;
   task?: string;
   content?: string;
+  /** Model to spawn: "claude" or "codex". Defaults to "claude". */
+  model?: string;
   optionIndex?: number;
   /** Phase 4: which suggestion label was applied */
   appliedLabel?: string;

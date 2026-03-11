@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync, statS
 import type { ProcessManager } from "./process-mgr.js";
 import type { ProcessDiscovery } from "./discovery.js";
 import type { TelemetryReceiver } from "./telemetry.js";
+import { spawnTerminalWindow } from "./arrange-windows.js";
 
 export function registerApiRoutes(
   app: ReturnType<typeof express>,
@@ -282,7 +283,7 @@ export function registerApiRoutes(
 
   // POST /api/spawn
   app.post("/api/spawn", requireAuth, (req, res) => {
-    const { project, task } = req.body as { project?: string; task?: string };
+    const { project, model: rawModel } = req.body as { project?: string; model?: string };
     if (!project) {
       res.status(400).json({ error: "Missing project" });
       return;
@@ -309,8 +310,13 @@ export function registerApiRoutes(
       return;
     }
 
-    const workerId = procMgr.spawn(realPath, task || null);
-    res.json({ ok: true, workerId });
+    const model = (rawModel === "codex" ? "codex" : "claude") as "claude" | "codex";
+    const result = spawnTerminalWindow(realPath, model);
+    if (!result.ok) {
+      res.status(500).json({ error: result.error || "Failed to spawn terminal" });
+      return;
+    }
+    res.json({ ok: true, model, project: realPath });
   });
 
   // GET /api/projects

@@ -1,10 +1,151 @@
-import { execFileSync } from "child_process";
+import { execFileSync, execFile } from "child_process";
 import { writeFileSync, unlinkSync } from "fs";
 import { randomBytes } from "crypto";
 import { join } from "path";
 import { homedir, tmpdir } from "os";
 
 const SEND_RETURN_BIN = process.env.SEND_RETURN_BIN || join(homedir(), "send-return");
+
+/**
+ * Send messages to multiple TTYs in a single batched AppleScript call.
+ * Much faster than calling sendInputToTty N times serially.
+ *
+ * Each entry's text is injected into its TTY tab, followed by a Return
+ * keystroke, all within one osascript invocation.
+ */
+export function sendInputToMultipleTtys(
+  entries: Array<{ tty: string; text: string }>,
+): Array<{ tty: string; ok: boolean; error?: string }> {
+  if (entries.length === 0) return [];
+  if (entries.length === 1) {
+    const r = sendInputToTty(entries[0].tty, entries[0].text);
+    return [{ tty: entries[0].tty, ...r }];
+  }
+
+  // Write temp files for each entry
+  const prepared: Array<{ tty: string; device: string; tmpFile: string }> = [];
+  const results: Array<{ tty: string; ok: boolean; error?: string }> = [];
+
+  for (const entry of entries) {
+    const cleaned = entry.text.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+    if (!cleaned) {
+      results.push({ tty: entry.tty, ok: false, error: "Empty message" });
+      continue;
+    }
+    const device = entry.tty.startsWith("/dev/") ? entry.tty : `/dev/${entry.tty}`;
+    const tmpFile = join(tmpdir(), `hive-input-${randomBytes(8).toString("hex")}.txt`);
+    try {
+      writeFileSync(tmpFile, cleaned, { encoding: "utf-8", mode: 0o600 });
+      prepared.push({ tty: entry.tty, device, tmpFile });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      results.push({ tty: entry.tty, ok: false, error: `Write tmp failed: ${msg.slice(0, 150)}` });
+    }
+  }
+
+  if (prepared.length === 0) return results;
+
+  const previousApp = getFrontmostApp();
+
+  // Build one AppleScript that injects text into each tab and sends Return
+  // via System Events keystroke (no need for send-return binary per-tab)
+  const tabBlocks = prepared.map(p => `
+    -- Inject into ${p.tty}
+    set targetTab to missing value
+    set targetWin to missing value
+    repeat with w in windows
+      repeat with t in tabs of w
+        if tty of t is "${p.device}" then
+          set targetTab to t
+          set targetWin to w
+          exit repeat
+        end if
+      end repeat
+      if targetTab is not missing value then exit repeat
+    end repeat
+    if targetTab is not missing value then
+      set payload to read POSIX file "${p.tmpFile}" as «class utf8»
+      do script payload in targetTab
+      set selected of targetTab to true
+      set index of targetWin to 1
+    end if
+    set targetTab to missing value
+    set targetWin to missing value`
+  ).join("\n");
+
+  // After injecting all text, activate Terminal and send Return for each tab
+  const returnBlocks = prepared.map(p => `
+    -- Return for ${p.tty}
+    set targetTab to missing value
+    set targetWin to missing value
+    repeat with w in windows
+      repeat with t in tabs of w
+        if tty of t is "${p.device}" then
+          set targetTab to t
+          set targetWin to w
+          exit repeat
+        end if
+      end repeat
+      if targetTab is not missing value then exit repeat
+    end repeat
+    if targetTab is not missing value then
+      set selected of targetTab to true
+      set index of targetWin to 1
+    end if
+    set targetTab to missing value
+    set targetWin to missing value`
+  ).join(`
+    delay 0.15
+    tell application "System Events"
+      tell process "Terminal"
+        key code 36
+      end tell
+    end tell
+    delay 0.3
+  `);
+
+  const script = `
+tell application "Terminal"
+${tabBlocks}
+end tell
+
+delay 0.2
+
+tell application "Terminal"
+  activate
+${returnBlocks}
+  delay 0.15
+end tell
+tell application "System Events"
+  tell process "Terminal"
+    key code 36
+  end tell
+end tell
+`;
+
+  try {
+    execFileSync("/usr/bin/osascript", ["-e", script], {
+      timeout: 30000,
+      encoding: "utf-8",
+    });
+    for (const p of prepared) {
+      results.push({ tty: p.tty, ok: true });
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    for (const p of prepared) {
+      results.push({ tty: p.tty, ok: false, error: `Batch send failed: ${msg.slice(0, 150)}` });
+    }
+  }
+
+  // Cleanup all temp files
+  for (const p of prepared) cleanup(p.tmpFile);
+
+  // Restore focus
+  if (previousApp) restoreFrontmostApp(previousApp);
+
+  return results;
+}
 
 /**
  * Capture the bundle ID of the currently frontmost application.
