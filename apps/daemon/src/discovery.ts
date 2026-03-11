@@ -76,6 +76,14 @@ export class ProcessDiscovery {
   // Stores the last known FD 1 offset per PID. If the offset increases
   // between scans, the process is writing to the terminal = working.
   private prevPtyOffset = new Map<number, number>();
+  // Per-tick caches — cleared at start of each scan() call.
+  // Prevents redundant execFileSync calls (ps, lsof) when the same PID
+  // is checked multiple times in one tick (idleConfirmed, idle→working, cooldown).
+  private tickCpuCache = new Map<number, number>();
+  private tickPtyCache = new Map<number, number>();
+  // Codex session file cache — persists across ticks. Only re-scanned if
+  // not found yet (null) or every 30s for staleness.
+  private codexSessionCache = new Map<number, { file: string | null; checkedAt: number }>();
 
   constructor(telemetry: TelemetryReceiver, streamer: SessionStreamer) {
     this.telemetry = telemetry;
@@ -142,6 +150,10 @@ export class ProcessDiscovery {
   }
 
   scan(): void {
+    // Clear per-tick caches so each scan gets fresh readings
+    this.tickCpuCache.clear();
+    this.tickPtyCache.clear();
+
     const processes = this.findClaudeProcesses();
     const alivePids = new Set<number>();
 
@@ -755,13 +767,18 @@ export class ProcessDiscovery {
    * Lightweight — single `ps` call, ~5ms.
    */
   private getCpuForPid(pid: number): number {
+    const cached = this.tickCpuCache.get(pid);
+    if (cached !== undefined) return cached;
     try {
       const out = execFileSync("ps", ["-p", String(pid), "-o", "%cpu="], {
         encoding: "utf-8",
         timeout: 2000,
       }).trim();
-      return parseFloat(out) || 0;
+      const val = parseFloat(out) || 0;
+      this.tickCpuCache.set(pid, val);
+      return val;
     } catch {
+      this.tickCpuCache.set(pid, 0);
       return 0;
     }
   }
@@ -776,6 +793,8 @@ export class ProcessDiscovery {
    * Returns the byte delta (0 = no output, >0 = bytes written since last check).
    */
   private getPtyOutputDelta(pid: number): number {
+    const cached = this.tickPtyCache.get(pid);
+    if (cached !== undefined) return cached;
     try {
       const out = execFileSync("lsof", ["-a", "-p", String(pid), "-d", "1"], {
         encoding: "utf-8",
@@ -783,16 +802,19 @@ export class ProcessDiscovery {
       }).trim();
       // Parse the SIZE/OFF column (7th field) — format is "0t12345678"
       const lastLine = out.split("\n").pop();
-      if (!lastLine) return 0;
+      if (!lastLine) { this.tickPtyCache.set(pid, 0); return 0; }
       const fields = lastLine.trim().split(/\s+/);
       const offsetStr = fields[6] || "";
       const offset = parseInt(offsetStr.replace(/^0t/, ""), 10);
-      if (isNaN(offset)) return 0;
+      if (isNaN(offset)) { this.tickPtyCache.set(pid, 0); return 0; }
 
       const prev = this.prevPtyOffset.get(pid) ?? offset;
       this.prevPtyOffset.set(pid, offset);
-      return offset - prev;
+      const delta = offset - prev;
+      this.tickPtyCache.set(pid, delta);
+      return delta;
     } catch {
+      this.tickPtyCache.set(pid, 0);
       return 0;
     }
   }
@@ -803,6 +825,14 @@ export class ProcessDiscovery {
    * Falls back to most recently modified file if birthtime matching fails.
    */
   private findCodexSessionFile(pid: number, startedAt: number): string | null {
+    // Cache: once found, don't re-scan the directory tree every tick.
+    // Re-check every 30s if not found (Codex may create the file late).
+    const cached = this.codexSessionCache.get(pid);
+    if (cached) {
+      if (cached.file) return cached.file; // found → stable
+      if (Date.now() - cached.checkedAt < 30_000) return null; // not found recently
+    }
+
     const codexDir = join(HOME, ".codex", "sessions");
     try {
       let bestFile: string | null = null;
@@ -847,8 +877,10 @@ export class ProcessDiscovery {
         } catch { /* skip */ }
       }
 
+      this.codexSessionCache.set(pid, { file: bestFile, checkedAt: Date.now() });
       return bestFile;
     } catch {
+      this.codexSessionCache.set(pid, { file: null, checkedAt: Date.now() });
       return null;
     }
   }
