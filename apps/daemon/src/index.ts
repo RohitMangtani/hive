@@ -53,6 +53,7 @@ setInterval(() => {
   procMgr.tick();
   discovery.scan();
   telemetry.writeWorkersFile();
+  ws.pushState();
   autoPilot.tick();
   watchdog.tick();
   collector.tick();

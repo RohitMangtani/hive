@@ -19,6 +19,7 @@ function analyze(filePath: string) {
   const discovery = createDiscovery() as unknown as {
     analyzeJsonlTail: (filePath: string, result: {
       projectName: string | null;
+      projectPath: string | null;
       latestAction: string | null;
       lastDirection: string | null;
       status: "working" | "idle";
@@ -26,6 +27,7 @@ function analyze(filePath: string) {
       highConfidence: boolean;
     }) => {
       projectName: string | null;
+      projectPath: string | null;
       latestAction: string | null;
       lastDirection: string | null;
       status: "working" | "idle";
@@ -36,6 +38,7 @@ function analyze(filePath: string) {
 
   return discovery.analyzeJsonlTail(filePath, {
     projectName: null,
+    projectPath: null,
     latestAction: null,
     lastDirection: null,
     status: "idle",
@@ -82,5 +85,29 @@ describe("ProcessDiscovery Codex tail parsing", () => {
 
     expect(result.status).toBe("idle");
     expect(result.highConfidence).toBe(true);
+  });
+
+  it("extracts the repo root from nested factory cwd paths", () => {
+    const file = writeSession([
+      '{"timestamp":"2026-03-11T12:22:36.410Z","cwd":"/Users/rmgtni/factory/projects/hive/apps/daemon","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2","model_context_window":258400}}',
+      '{"timestamp":"2026-03-11T12:22:36.410Z","type":"event_msg","payload":{"type":"user_message","message":"audit hive","images":[],"local_images":[],"text_elements":[]}}',
+    ]);
+    dirs.push(file.replace(/\/[^/]+$/, ""));
+
+    const result = analyze(file);
+
+    expect(result.projectName).toBe("hive");
+    expect(result.projectPath).toBe("/Users/rmgtni/factory/projects/hive");
+  });
+
+  it("keeps non-factory cwd paths intact when deriving project identity", () => {
+    const discovery = createDiscovery() as unknown as {
+      projectIdentityFromCwd: (cwd: string) => { project: string; projectName: string };
+    };
+
+    expect(discovery.projectIdentityFromCwd("/Users/rmgtni/scratch/foo")).toEqual({
+      project: "/Users/rmgtni/scratch/foo",
+      projectName: "foo",
+    });
   });
 });

@@ -22,6 +22,7 @@ export class WsServer {
   private readOnlyClients = new Set<WebSocket>();
   // Track which worker each client is subscribed to
   private clientSubs = new Map<WebSocket, string>();
+  private lastWorkersSnapshot: string | null = null;
 
   constructor(
     telemetry: TelemetryReceiver,
@@ -47,9 +48,11 @@ export class WsServer {
     });
 
     this.telemetry.onRemoval(() => {
+      const workers = this.telemetry.getAll();
+      this.lastWorkersSnapshot = JSON.stringify(workers);
       this.broadcast({
         type: "workers",
-        workers: this.telemetry.getAll(),
+        workers,
       });
     });
 
@@ -60,6 +63,18 @@ export class WsServer {
         content: data,
       });
     });
+  }
+
+  /** Push full worker list to all clients. Call from the main tick loop
+   *  so the dashboard stays current even when status changes come from
+   *  discovery (JSONL/CPU analysis) instead of hooks. */
+  pushState(): void {
+    if (this.clients.size === 0) return;
+    const workers = this.telemetry.getAll();
+    const snapshot = JSON.stringify(workers);
+    if (snapshot === this.lastWorkersSnapshot) return;
+    this.lastWorkersSnapshot = snapshot;
+    this.broadcast({ type: "workers", workers });
   }
 
   start(): void {
@@ -76,7 +91,9 @@ export class WsServer {
       this.clients.add(ws);
       if (!isAdmin) this.readOnlyClients.add(ws);
       // Send current workers list — quadrants are already stamped by the 3s tick loop.
-      this.send(ws, { type: "workers", workers: this.telemetry.getAll() });
+      const workers = this.telemetry.getAll();
+      this.lastWorkersSnapshot = JSON.stringify(workers);
+      this.send(ws, { type: "workers", workers });
       this.send(ws, { type: "auth", admin: isAdmin });
 
       ws.on("message", (raw) => {

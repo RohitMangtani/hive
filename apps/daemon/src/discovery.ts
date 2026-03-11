@@ -37,6 +37,7 @@ interface ProcessInfo {
 /** Parsed context from a session JSONL tail */
 interface SessionContext {
   projectName: string | null;
+  projectPath: string | null;
   latestAction: string | null;
   lastDirection: string | null;
   status: "working" | "idle";
@@ -375,7 +376,7 @@ export class ProcessDiscovery {
       const worker: WorkerState = {
         id,
         pid: proc.pid,
-        project: proc.project,
+        project: ctx.projectPath || proc.project,
         projectName: ctx.projectName || proc.projectName,
         status: initialStatus,
         currentAction: initialStatus === "working" ? (ctx.latestAction || "Working...") : null,
@@ -463,7 +464,10 @@ export class ProcessDiscovery {
     const ctx = this.readSessionContextFromFile(cachedPath);
     const tailCtx = { ...auditCtx, tailStatus: ctx.status, tailAction: ctx.latestAction, tailFileAgeMs: Math.round(ctx.fileAgeMs) };
 
-    if (ctx.projectName) {
+    if (ctx.projectName && ctx.projectPath) {
+      existing.project = ctx.projectPath;
+      existing.projectName = ctx.projectName;
+    } else if (ctx.projectName) {
       existing.projectName = ctx.projectName;
     }
     if (ctx.lastDirection) {
@@ -983,11 +987,7 @@ export class ProcessDiscovery {
 
       if (!cwd) return null;
 
-      const projectName = this.projectNameFromCwd(cwd);
-      const homeDir = process.env.HOME || `/Users/${process.env.USER}`;
-      const project = (cwd === homeDir || cwd === "/")
-        ? `${homeDir}/factory/projects/${projectName}`
-        : cwd;
+      const { project, projectName } = this.projectIdentityFromCwd(cwd);
 
       return { tty, cwd, project, projectName, sessionIds, jsonlFile };
     } catch {
@@ -1229,7 +1229,7 @@ export class ProcessDiscovery {
    */
   private readSessionContextFromFile(filePath: string): SessionContext {
     const result: SessionContext = {
-      projectName: null, latestAction: null, lastDirection: null,
+      projectName: null, projectPath: null, latestAction: null, lastDirection: null,
       status: "idle", fileAgeMs: Infinity, highConfidence: false,
     };
 
@@ -1248,7 +1248,7 @@ export class ProcessDiscovery {
    */
   private readSessionContext(sessionIds: string[], cwd?: string): SessionContext {
     const result: SessionContext = {
-      projectName: null, latestAction: null, lastDirection: null,
+      projectName: null, projectPath: null, latestAction: null, lastDirection: null,
       status: "idle", fileAgeMs: Infinity, highConfidence: false,
     };
 
@@ -1283,15 +1283,10 @@ export class ProcessDiscovery {
       const cwdMatch = tail.match(/"cwd"\s*:\s*"([^"]+)"/);
       if (cwdMatch) {
         const cwd = cwdMatch[1];
-        const factoryMatch = cwd.match(/\/factory\/projects\/([^/]+)/);
-        if (factoryMatch) {
-          result.projectName = factoryMatch[1];
-        } else {
-          const segments = cwd.split("/").filter(Boolean);
-          const last = segments[segments.length - 1];
-          if (last && last !== "rmgtni" && last !== "Users") {
-            result.projectName = last;
-          }
+        const identity = this.projectIdentityFromCwd(cwd);
+        if (identity.projectName !== "unknown") {
+          result.projectName = identity.projectName;
+          result.projectPath = identity.project;
         }
       }
 
@@ -1560,9 +1555,25 @@ export class ProcessDiscovery {
     }
   }
 
-  private projectNameFromCwd(cwd: string): string {
-    const homeDir = process.env.HOME || `/Users/${process.env.USER}`;
-    if (cwd === homeDir || cwd === "/") return "unknown";
-    return cwd.split("/").pop() || cwd;
+  private projectIdentityFromCwd(cwd: string): { project: string; projectName: string } {
+    if (cwd === HOME || cwd === "/") {
+      return {
+        project: `${HOME}/factory/projects/unknown`,
+        projectName: "unknown",
+      };
+    }
+
+    const factoryMatch = cwd.match(/^(.*\/factory\/projects\/([^/]+))(?:\/.*)?$/);
+    if (factoryMatch) {
+      return {
+        project: factoryMatch[1],
+        projectName: factoryMatch[2],
+      };
+    }
+
+    return {
+      project: cwd,
+      projectName: cwd.split("/").pop() || cwd,
+    };
   }
 }

@@ -13,3 +13,7 @@ HANDOFF-*.md
 docs/plans/
 .env*.local
 firebase-debug.log
+
+# Local research scratch files
+medium-*.md
+research-*.md
