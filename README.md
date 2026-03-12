@@ -1,6 +1,6 @@
 # Hive
 
-One screen for all your AI agents. Find My iPhone, but for terminal agents.
+One screen for all your AI agents. Find My iPhone, but for terminal agents. macOS only.
 
 ```
   Your terminals                     Your phone
