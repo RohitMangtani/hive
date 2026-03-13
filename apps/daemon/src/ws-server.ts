@@ -281,20 +281,16 @@ export class WsServer {
         // Try ProcessManager first (for managed/spawned workers)
         this.procMgr.kill(msg.workerId);
 
-        // Kill the actual process by PID (works for discovered workers too)
+        // SIGKILL immediately — process must be dead before we close the
+        // Terminal window, otherwise Terminal shows a confirmation dialog
+        // that can only be dismissed on the physical machine.
         if (killPid) {
-          try {
-            process.kill(killPid, "SIGTERM");
-            const pid = killPid;
-            setTimeout(() => {
-              try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
-            }, 3000);
-          } catch { /* already gone */ }
+          try { process.kill(killPid, "SIGKILL"); } catch { /* already gone */ }
         }
 
-        // Close the Terminal.app window/tab for this agent
+        // Close the Terminal.app window/tab after process is dead (no dialog)
         if (killTty) {
-          closeTerminalWindow(killTty);
+          setTimeout(() => closeTerminalWindow(killTty), 500);
         }
 
         // Ensure removed from telemetry (in case procMgr didn't handle it)
