@@ -1661,12 +1661,27 @@ export class TelemetryReceiver {
     }
   }
 
+  /** Resolve the git repo name from a worker's project path (e.g., "hive" from the repo root) */
+  private resolveGitRepoName(worker: WorkerState): string {
+    try {
+      const { execFileSync } = require("child_process");
+      const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+        cwd: worker.project,
+        encoding: "utf-8",
+        timeout: 3000,
+      }).trim();
+      return root.split("/").pop() || worker.projectName;
+    } catch {
+      return worker.projectName;
+    }
+  }
+
   /** Build a rich review summary with quadrant, project, and branch context */
-  private buildReviewSummary(action: string, worker: WorkerState, branch?: string): string {
+  private buildReviewSummary(action: string, worker: WorkerState, repoName: string, branch?: string): string {
     const q = this.quadrantAssignments.get(worker.id);
     const qLabel = q ? `Q${q}` : (worker.tty || "agent");
     const branchSuffix = branch ? ` (${branch})` : "";
-    return `${qLabel} ${action} ${worker.projectName}${branchSuffix}`;
+    return `${qLabel} ${action} ${repoName}${branchSuffix}`;
   }
 
   /** Get recent artifacts formatted for review attachment */
@@ -1677,6 +1692,16 @@ export class TelemetryReceiver {
       path: a.path.split("/").slice(-2).join("/"),
       action: a.action,
     }));
+  }
+
+  /** Dedup: track last review per worker to prevent duplicates from chained commands */
+  private lastReviewByWorker = new Map<string, { type: string; ts: number }>();
+
+  private isDuplicateReview(workerId: string, type: string): boolean {
+    const last = this.lastReviewByWorker.get(workerId);
+    if (last && last.type === type && Date.now() - last.ts < 30_000) return true;
+    this.lastReviewByWorker.set(workerId, { type, ts: Date.now() });
+    return false;
   }
 
   /** Auto-detect reviewable actions from Bash tool_input */
@@ -1692,55 +1717,40 @@ export class TelemetryReceiver {
 
     const gitUrl = this.resolveGitUrl(worker);
     const branch = this.resolveGitBranch(worker);
+    const repoName = this.resolveGitRepoName(worker);
     const artifacts = this.getReviewArtifacts(workerId);
+
+    // npm run build + git push in same command chain (check before individual patterns)
+    if (/\bgit\s+commit\b/.test(cmdLower) && /\bgit\s+push\b/.test(cmdLower)) {
+      if (this.isDuplicateReview(workerId, "push")) return;
+      const summary = this.buildReviewSummary("committed and pushed", worker, repoName, branch);
+      this.addReview(summary, workerId, repoName, { type: "push", url: gitUrl, artifacts });
+      return;
+    }
 
     // git push
     if (/\bgit\s+push\b/.test(cmdLower)) {
-      const summary = this.buildReviewSummary("pushed", worker, branch);
-      console.log(`[review] Auto-detected push by ${worker.tty || workerId} in ${worker.projectName}`);
-      this.addReview(
-        summary,
-        workerId,
-        worker.projectName,
-        { type: "push", url: gitUrl, artifacts },
-      );
+      if (this.isDuplicateReview(workerId, "push")) return;
+      const summary = this.buildReviewSummary("pushed", worker, repoName, branch);
+      console.log(`[review] Auto-detected push by ${worker.tty || workerId} in ${repoName}`);
+      this.addReview(summary, workerId, repoName, { type: "push", url: gitUrl, artifacts });
       return;
     }
 
     // gh pr create
     if (/\bgh\s+pr\s+create\b/.test(cmdLower)) {
-      const summary = this.buildReviewSummary("created PR in", worker, branch);
-      console.log(`[review] Auto-detected PR by ${worker.tty || workerId} in ${worker.projectName}`);
-      this.addReview(
-        summary,
-        workerId,
-        worker.projectName,
-        { type: "pr", url: gitUrl ? `${gitUrl}/pulls` : undefined, artifacts },
-      );
+      if (this.isDuplicateReview(workerId, "pr")) return;
+      const summary = this.buildReviewSummary("created PR in", worker, repoName, branch);
+      console.log(`[review] Auto-detected PR by ${worker.tty || workerId} in ${repoName}`);
+      this.addReview(summary, workerId, repoName, { type: "pr", url: gitUrl ? `${gitUrl}/pulls` : undefined, artifacts });
       return;
     }
 
     // vercel deploy (or npx vercel)
     if (/\bvercel\b/.test(cmdLower) && (/\bdeploy\b/.test(cmdLower) || /\bnpx\s+vercel\b/.test(cmdLower) || /^vercel(\s|$)/.test(cmdLower.trim()))) {
-      const summary = this.buildReviewSummary("deployed", worker, branch);
-      this.addReview(
-        summary,
-        workerId,
-        worker.projectName,
-        { type: "deploy", artifacts },
-      );
-      return;
-    }
-
-    // npm run build + git push in same command chain
-    if (/\bgit\s+commit\b/.test(cmdLower) && /\bgit\s+push\b/.test(cmdLower)) {
-      const summary = this.buildReviewSummary("committed and pushed", worker, branch);
-      this.addReview(
-        summary,
-        workerId,
-        worker.projectName,
-        { type: "push", url: gitUrl, artifacts },
-      );
+      if (this.isDuplicateReview(workerId, "deploy")) return;
+      const summary = this.buildReviewSummary("deployed", worker, repoName, branch);
+      this.addReview(summary, workerId, repoName, { type: "deploy", artifacts });
       return;
     }
   }
