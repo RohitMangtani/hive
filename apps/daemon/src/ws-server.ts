@@ -330,8 +330,32 @@ export class WsServer {
               return;
             }
 
-            // Check for trust/sandbox prompts only (no raw terminal noise)
+            // Check terminal output for prompts or "not found" errors
             if (this.discovery) {
+              // Detect "command not found" — CLI isn't installed
+              const content = this.discovery.readTerminalContent(spawnTty);
+              if (content) {
+                const tail = content.slice(-500);
+                if (tail.match(/command not found|not found:.*(?:claude|codex|openclaw)|No such file or directory/i)) {
+                  const cliName = model.charAt(0).toUpperCase() + model.slice(1);
+                  current.status = "idle";
+                  current.currentAction = `${cliName} CLI not installed`;
+                  current.lastAction = `${cliName} CLI not installed`;
+                  current.terminalPreview = `${cliName} is not installed on this machine. Install it first, then try again.`;
+                  this.telemetry.notifyExternal(current);
+                  clearInterval(pollTimer);
+                  // Auto-remove after 10s so the error tile doesn't linger forever
+                  setTimeout(() => {
+                    const still = this.telemetry.get(placeholderId);
+                    if (still && still.pid === 0) {
+                      this.telemetry.removeWorker(placeholderId);
+                    }
+                  }, 10_000);
+                  return;
+                }
+              }
+
+              // Check for trust/sandbox prompts
               const prompt = this.discovery.detectPrompt(spawnTty);
               if (prompt) {
                 current.status = "waiting";
