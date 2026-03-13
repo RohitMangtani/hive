@@ -234,8 +234,8 @@ export function AgentCard({
     <div
       onClick={managing ? undefined : onClick}
       onPointerDown={managing ? undefined : onPointerDown}
-      className={`card relative ${stuck ? "card-stuck" : ""} ${selected && !managing ? "card-selected" : ""} ${hasPrompt ? "card-stuck" : ""}`}
-      style={{ borderLeftColor: hasPrompt ? "#60a5fa" : flagged ? FLAG_COLOR : DOT_BG[color] }}
+      className={`card relative ${stuck ? "card-stuck" : ""} ${selected && !managing ? "card-selected" : ""} ${hasPrompt || worker.terminalPreview ? "card-stuck" : ""}`}
+      style={{ borderLeftColor: hasPrompt || worker.terminalPreview ? "#60a5fa" : flagged ? FLAG_COLOR : DOT_BG[color] }}
     >
       {managing && onKill && (
         <button
@@ -280,18 +280,20 @@ export function AgentCard({
 
       <p className="text-[10px] text-[var(--text-light)] truncate mb-0.5">{worker.projectName}</p>
 
-      {hasPrompt ? (
+      {hasPrompt || worker.terminalPreview ? (
         <>
-          <p className="text-[11px] leading-tight text-[#60a5fa] font-medium">
-            {worker.promptMessage || "Approval needed"}
-          </p>
-          <p className="text-[10px] text-[var(--text-muted)] mt-1">
-            {worker.promptType === "trust"
-              ? "The CLI needs permission to access this project folder."
-              : "The CLI is asking about bash command sandboxing."}
-          </p>
-          {onApprovePrompt && (
-            <div className="flex items-center gap-1 mt-2" onClick={(e) => e.stopPropagation()}>
+          {worker.terminalPreview && (
+            <pre className="text-[9px] leading-[1.3] text-[var(--text-muted)] font-mono whitespace-pre-wrap overflow-hidden mt-0.5 mb-1 max-h-[5rem] opacity-70">
+              {worker.terminalPreview.split("\n").slice(-6).join("\n")}
+            </pre>
+          )}
+          {hasPrompt && (
+            <p className="text-[11px] leading-tight text-[#60a5fa] font-medium">
+              {worker.promptMessage || "Approval needed"}
+            </p>
+          )}
+          {onApprovePrompt && hasPrompt && (
+            <div className="flex items-center gap-1 mt-1.5" onClick={(e) => e.stopPropagation()}>
               <button
                 type="button"
                 onClick={(e) => {
@@ -304,6 +306,9 @@ export function AgentCard({
                 {worker.promptType === "trust" ? "Trust folder" : "Allow"}
               </button>
             </div>
+          )}
+          {!hasPrompt && worker.terminalPreview && (
+            <p className="text-[10px] text-[var(--text-muted)] mt-1">Waiting for session to start...</p>
           )}
         </>
       ) : (

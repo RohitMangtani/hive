@@ -165,12 +165,12 @@ end tell
    * Detect pre-session prompts (trust folder, sandbox) from terminal content.
    * Returns the prompt type and a human-readable message, or null if no prompt detected.
    */
-  detectPrompt(tty: string): { type: "trust" | "sandbox"; message: string } | null {
+  detectPrompt(tty: string): { type: "trust" | "sandbox"; message: string; content: string } | null {
     // Rate-limit: don't re-check the same TTY within 5 seconds
     const cached = this.promptCheckedTtys.get(tty);
     if (cached && Date.now() - cached.checkedAt < 5000) {
       if (!cached.result) return null;
-      return { type: cached.result, message: cached.result === "trust" ? "Trust this folder?" : "Allow sandbox?" };
+      return { type: cached.result, message: cached.result === "trust" ? "Trust this folder?" : "Allow sandbox?", content: "" };
     }
 
     const content = this.readTerminalContent(tty);
@@ -185,18 +185,32 @@ end tell
         content.includes("Yes, I trust") ||
         content.includes("safety check")) {
       this.promptCheckedTtys.set(tty, { checkedAt: Date.now(), result: "trust" });
-      return { type: "trust", message: "Trust this project folder?" };
+      return { type: "trust", message: "Trust this project folder?", content };
     }
 
     // Claude CLI sandbox prompt patterns
     if (content.includes("sandboxed") ||
         content.includes("sandbox") && content.includes("bash")) {
       this.promptCheckedTtys.set(tty, { checkedAt: Date.now(), result: "sandbox" });
-      return { type: "sandbox", message: "Allow bash commands?" };
+      return { type: "sandbox", message: "Allow bash commands?", content };
     }
 
     this.promptCheckedTtys.set(tty, { checkedAt: Date.now(), result: null });
     return null;
+  }
+
+  /**
+   * Read terminal content for a worker with no session yet.
+   * Returns the visible text trimmed to the last meaningful lines.
+   */
+  readTerminalPreview(tty: string): string | null {
+    const cached = this.promptCheckedTtys.get(tty);
+    if (cached && Date.now() - cached.checkedAt < 3000) return null; // avoid re-reading too fast
+    const content = this.readTerminalContent(tty);
+    if (!content) return null;
+    // Trim to last ~15 lines (skip shell noise at top)
+    const lines = content.split("\n").filter(l => l.trim());
+    return lines.slice(-15).join("\n").trim().slice(0, 500) || null;
   }
 
   /** Clear prompt detection cache for a TTY (call after approving) */
@@ -412,17 +426,26 @@ end tell
             // Session started — prompt was approved (either from dashboard or terminal)
             existing.promptType = null;
             existing.promptMessage = undefined;
+            existing.terminalPreview = undefined;
             this.clearPromptCache(proc.tty);
           } else if (!cachedSessionFile && proc.tty && Date.now() - proc.startedAt < 120_000) {
-            // Still no session — re-check for prompts
+            // Still no session — re-check for prompts and capture terminal preview
             const prompt = this.detectPrompt(proc.tty);
             if (prompt) {
               existing.status = "waiting";
               existing.promptType = prompt.type;
               existing.promptMessage = prompt.message;
               existing.currentAction = prompt.message;
+              existing.terminalPreview = prompt.content.split("\n").filter((l: string) => l.trim()).slice(-15).join("\n").trim().slice(0, 500) || undefined;
               this.telemetry.notifyExternal(existing);
               continue;
+            }
+            // No known prompt — show raw terminal content so user sees what's happening
+            const preview = this.readTerminalPreview(proc.tty);
+            if (preview) {
+              existing.terminalPreview = preview;
+              existing.status = "waiting";
+              existing.currentAction = "Waiting for input...";
             }
           }
 
@@ -563,6 +586,11 @@ end tell
           worker.promptType = prompt.type;
           worker.promptMessage = prompt.message;
           worker.currentAction = prompt.message;
+          worker.terminalPreview = prompt.content.split("\n").filter((l: string) => l.trim()).slice(-15).join("\n").trim().slice(0, 500) || undefined;
+        } else {
+          // No known prompt but no session either — show raw terminal content
+          const preview = this.readTerminalPreview(proc.tty);
+          if (preview) worker.terminalPreview = preview;
         }
       }
     }

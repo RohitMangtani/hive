@@ -29,6 +29,8 @@ export interface WorkerState {
   promptType?: "trust" | "sandbox" | null;
   /** Human-readable prompt message to display on the dashboard. */
   promptMessage?: string;
+  /** Raw terminal output for agents with no session yet (shows CLI prompts). */
+  terminalPreview?: string;
 }
 
 export interface TelemetryEvent {
