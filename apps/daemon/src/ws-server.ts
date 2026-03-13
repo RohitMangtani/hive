@@ -235,8 +235,8 @@ export class WsServer {
           : undefined;
         const openQ = requestedQ ?? this.telemetry.getFirstOpenQuadrant();
 
-        // Auto-send an init message after the agent starts (task or "hi")
-        const initMessage = msg.task?.trim() || "hi";
+        // Only send an init message if the user provided a task
+        const initMessage = msg.task?.trim() || undefined;
 
         // Open a real Terminal window with the CLI, positioned in the target quadrant
         const termResult = spawnTerminalWindow(real, model, openQ, initMessage);
