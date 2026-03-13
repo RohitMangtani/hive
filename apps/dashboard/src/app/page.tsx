@@ -6,6 +6,7 @@ import { getAuthMode, unlockAdmin, lockAdmin } from "@/components/SitePasswordGa
 import { AgentCard, DOT_BG } from "@/components/AgentCard";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ReviewDrawer } from "@/components/ReviewDrawer";
+import { SpawnDialog } from "@/components/SpawnDialog";
 import type { WorkerState } from "@/lib/types";
 
 const DEFAULT_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3002";
@@ -96,6 +97,7 @@ export default function Home() {
   const previewUrlsRef = useRef<Map<string, string>>(new Map());
   const [showReviews, setShowReviews] = useState(false);
   const [managing, setManaging] = useState(false);
+  const [showSpawnDialog, setShowSpawnDialog] = useState(false);
 
   useEffect(() => {
     try {
@@ -142,7 +144,7 @@ export default function Home() {
     if (savedAgent) setSelectedId(savedAgent);
   }, []);
 
-  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect, reviews, markReviewSeen, dismissReview, markAllReviewsSeen, clearAllReviews } = useHive(daemonUrl);
+  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect, reviews, markReviewSeen, dismissReview, markAllReviewsSeen, clearAllReviews, models } = useHive(daemonUrl);
   const [authError, setAuthError] = useState(false);
 
   useEffect(() => {
@@ -320,22 +322,13 @@ export default function Home() {
           ) : !isViewer && (
             <>
               {numbered.length < MAX_SLOTS && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => send({ type: "spawn", project: "~", model: "claude" })}
-                    className="px-2 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text-light)] transition-colors cursor-pointer"
-                  >
-                    + Claude
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => send({ type: "spawn", project: "~", model: "codex" })}
-                    className="px-2 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text-light)] transition-colors cursor-pointer"
-                  >
-                    + Codex
-                  </button>
-                </>
+                <button
+                  type="button"
+                  onClick={() => setShowSpawnDialog(true)}
+                  className="px-2 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text-light)] transition-colors cursor-pointer"
+                >
+                  + Agent
+                </button>
               )}
               {numbered.length > 0 && (
                 <button
@@ -451,6 +444,17 @@ export default function Home() {
         onMarkAllSeen={markAllReviewsSeen}
         onClearAll={clearAllReviews}
       />
+
+      {showSpawnDialog && (
+        <SpawnDialog
+          models={models}
+          onSpawn={(project, task, model) => {
+            send({ type: "spawn", project, model, task: task || undefined });
+            setShowSpawnDialog(false);
+          }}
+          onClose={() => setShowSpawnDialog(false)}
+        />
+      )}
 
     </div>
   );

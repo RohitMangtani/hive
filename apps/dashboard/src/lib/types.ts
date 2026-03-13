@@ -6,3 +6,9 @@ export type {
   DaemonResponse,
   ReviewItem,
 } from "@hive/types";
+
+/** Available agent type for the spawn dialog (sent by daemon over WS). */
+export interface AgentModel {
+  id: string;
+  label: string;
+}

@@ -273,12 +273,21 @@ export function AgentCard({
           className={`w-2 h-2 rounded-full shrink-0 ${hasPrompt ? "animate-pulse" : stuck ? "animate-pulse" : ""}`}
           style={{ background: hasPrompt ? "#60a5fa" : flagged ? FLAG_COLOR : DOT_BG[color] }}
         />
-        <span className="text-[10px] font-medium px-1.5 py-px rounded ml-auto" style={hasPrompt ? { background: "rgba(96,165,250,0.12)", color: "#60a5fa" } : flagged ? { background: "rgba(249,115,22,0.12)", color: FLAG_COLOR } : badgeStyle(color)}>
-          {hasPrompt ? "Approval needed" : flagged ? "Flagged" : statusWord(worker)}
-        </span>
+        {color === "green" && !hasPrompt && (
+          <span className="shrink-0 opacity-60" title="Active chat">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M2 3a1 1 0 011-1h10a1 1 0 011 1v7a1 1 0 01-1 1H6l-3 3V11H3a1 1 0 01-1-1V3z" fill="var(--dot-active)" fillOpacity="0.5" stroke="var(--dot-active)" strokeWidth="1" />
+            </svg>
+          </span>
+        )}
+        {(hasPrompt || flagged) && (
+          <span className="text-[10px] font-medium px-1.5 py-px rounded ml-auto" style={hasPrompt ? { background: "rgba(96,165,250,0.12)", color: "#60a5fa" } : { background: "rgba(249,115,22,0.12)", color: FLAG_COLOR }}>
+            {hasPrompt ? "Approval needed" : "Flagged"}
+          </span>
+        )}
       </div>
 
-      <p className="text-[10px] text-[var(--text-light)] truncate mb-0.5">{worker.projectName}</p>
+      {/* Project name omitted — tiles show only agent + description */}
 
       {hasPrompt || worker.terminalPreview ? (
         <>

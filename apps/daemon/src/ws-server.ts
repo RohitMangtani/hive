@@ -9,7 +9,7 @@ import type { SessionStreamer } from "./session-stream.js";
 import { sendSelectionToTty, sendEnterToTty } from "./tty-input.js";
 import { spawnTerminalWindow, closeTerminalWindow } from "./arrange-windows.js";
 import { validateToken } from "./auth.js";
-import type { ProcessDiscovery } from "./discovery.js";
+import { ProcessDiscovery } from "./discovery.js";
 import type { DaemonMessage, DaemonResponse } from "./types.js";
 
 export class WsServer {
@@ -26,6 +26,7 @@ export class WsServer {
   // Track which worker each client is subscribed to
   private clientSubs = new Map<WebSocket, string>();
   private lastWorkersSnapshot: string | null = null;
+  private lastModelsSnapshot: string | null = null;
 
   constructor(
     telemetry: TelemetryReceiver,
@@ -75,6 +76,20 @@ export class WsServer {
     });
   }
 
+  /** Build the list of available agent types (built-in + custom from agents.json). */
+  private getAvailableModels(): { id: string; label: string }[] {
+    const builtIn = [
+      { id: "claude", label: "Claude" },
+      { id: "codex", label: "Codex" },
+      { id: "openclaw", label: "OpenClaw" },
+    ];
+    const custom = ProcessDiscovery.getCustomAgents().map(a => ({
+      id: a.id,
+      label: a.label,
+    }));
+    return [...builtIn, ...custom];
+  }
+
   /** Set the discovery instance (for prompt cache management) */
   setDiscovery(discovery: ProcessDiscovery): void {
     this.discovery = discovery;
@@ -87,9 +102,22 @@ export class WsServer {
     if (this.clients.size === 0) return;
     const workers = this.telemetry.getAll();
     const snapshot = JSON.stringify(workers);
-    if (snapshot === this.lastWorkersSnapshot) return;
-    this.lastWorkersSnapshot = snapshot;
-    this.broadcast({ type: "workers", workers });
+    if (snapshot !== this.lastWorkersSnapshot) {
+      this.lastWorkersSnapshot = snapshot;
+      this.broadcast({ type: "workers", workers });
+    }
+    // Check if available models changed (custom agents added/removed)
+    const models = this.getAvailableModels();
+    const modelsSnapshot = JSON.stringify(models);
+    if (modelsSnapshot !== this.lastModelsSnapshot) {
+      this.lastModelsSnapshot = modelsSnapshot;
+      const data = JSON.stringify({ type: "models", models });
+      for (const client of this.clients) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(data);
+        }
+      }
+    }
   }
 
   start(): void {
@@ -112,6 +140,10 @@ export class WsServer {
       this.send(ws, { type: "auth", admin: isAdmin });
       // Send full review list on connect (hosted dashboard can't reach REST on port 3001)
       this.send(ws, { type: "reviews", reviews: this.telemetry.getReviews() });
+      // Send available agent models for spawn dialog
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "models", models: this.getAvailableModels() }));
+      }
 
       ws.on("message", (raw) => {
         let msg: DaemonMessage;

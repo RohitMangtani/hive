@@ -251,7 +251,7 @@ export function ChatPanel({
             }
             return rendered;
           })()}
-          {worker.status === "working" && entries.length > 0 && entries[entries.length - 1].role === "user" && (
+          {worker.status === "working" && (
             <div className="chat-bubble flex justify-start">
               <div className="bg-[var(--bg-panel)] border border-[var(--border)] rounded-2xl rounded-bl-md px-4 py-3 flex items-center gap-1">
                 {[0, 1, 2].map((i) => (

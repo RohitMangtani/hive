@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatEntry, DaemonMessage, DaemonResponse, ReviewItem, WorkerState } from "@/lib/types";
+import type { AgentModel, ChatEntry, DaemonMessage, DaemonResponse, ReviewItem, WorkerState } from "@/lib/types";
+
+/** Extended response type until shared types package adds "models" */
+type ExtendedResponse = DaemonResponse | { type: "models"; models?: AgentModel[] };
 
 const MAX_CHAT_ENTRIES = 200;
 
@@ -14,6 +17,11 @@ export function useHive(daemonUrl: string) {
   const [chatEntries, setChatEntries] = useState<Map<string, ChatEntry[]>>(new Map());
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
+  const [models, setModels] = useState<AgentModel[]>([
+    { id: "claude", label: "Claude" },
+    { id: "codex", label: "Codex" },
+    { id: "openclaw", label: "OpenClaw" },
+  ]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -75,7 +83,7 @@ export function useHive(daemonUrl: string) {
       };
 
       ws.onmessage = (event) => {
-        let data: DaemonResponse;
+        let data: ExtendedResponse;
         try {
           data = JSON.parse(event.data);
         } catch {
@@ -223,6 +231,13 @@ export function useHive(daemonUrl: string) {
             break;
           }
 
+          case "models": {
+            if (data.models && Array.isArray(data.models)) {
+              setModels(data.models);
+            }
+            break;
+          }
+
           case "auth": {
             setIsAdmin(data.admin ?? false);
             break;
@@ -334,6 +349,6 @@ export function useHive(daemonUrl: string) {
 
   return {
     connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect,
-    reviews, markReviewSeen, dismissReview, markAllReviewsSeen, clearAllReviews,
+    reviews, markReviewSeen, dismissReview, markAllReviewsSeen, clearAllReviews, models,
   };
 }

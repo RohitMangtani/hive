@@ -1,20 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import type { AgentModel } from "@/lib/types";
 
 interface SpawnDialogProps {
+  models: AgentModel[];
   onSpawn: (project: string, task: string, model: string) => void;
   onClose: () => void;
 }
 
-const MODELS = [
-  { id: "claude", label: "Claude" },
-  { id: "codex", label: "Codex" },
-  { id: "openclaw", label: "OpenClaw" },
-];
-
-export function SpawnDialog({ onSpawn, onClose }: SpawnDialogProps) {
-  const [selectedModel, setSelectedModel] = useState("claude");
+export function SpawnDialog({ models, onSpawn, onClose }: SpawnDialogProps) {
+  const [selectedModel, setSelectedModel] = useState(models[0]?.id || "claude");
   const [task, setTask] = useState("");
 
   return (
@@ -31,14 +27,14 @@ export function SpawnDialog({ onSpawn, onClose }: SpawnDialogProps) {
         <h2 className="text-lg font-semibold mb-4">Spawn Agent</h2>
 
         {/* Model selector */}
-        <div className="flex gap-2 mb-4">
-          {MODELS.map((m) => (
+        <div className={`flex gap-2 mb-4 ${models.length > 4 ? "flex-wrap" : ""}`}>
+          {models.map((m) => (
             <button
               key={m.id}
               type="button"
               onClick={() => setSelectedModel(m.id)}
               className={`
-                flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-colors
+                ${models.length > 4 ? "px-3 py-1.5 text-xs" : "flex-1 px-3 py-2 text-sm"} rounded-md border font-medium transition-colors
                 ${
                   selectedModel === m.id
                     ? "border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--text)]"
