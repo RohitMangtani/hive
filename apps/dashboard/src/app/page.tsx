@@ -12,17 +12,17 @@ import type { WorkerState } from "@/lib/types";
 const DEFAULT_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3002";
 const MAX_SLOTS = 8;
 
-/** Grid formations: cols×rows for each agent count, matching daemon window arrangement */
+/** Vertical stack: 1 column, agents stacked top-to-bottom matching terminal layout */
 const GRID_CLASSES: Record<number, string> = {
-  0: "grid-cols-1 grid-rows-1",
-  1: "grid-cols-1 grid-rows-1",
-  2: "grid-cols-2 grid-rows-1",
-  3: "grid-cols-2 grid-rows-2",
-  4: "grid-cols-2 grid-rows-2",
-  5: "grid-cols-3 grid-rows-2",
-  6: "grid-cols-3 grid-rows-2",
-  7: "grid-cols-4 grid-rows-2",
-  8: "grid-cols-4 grid-rows-2",
+  0: "grid-cols-1",
+  1: "grid-cols-1",
+  2: "grid-cols-1",
+  3: "grid-cols-1",
+  4: "grid-cols-1",
+  5: "grid-cols-1",
+  6: "grid-cols-1",
+  7: "grid-cols-1",
+  8: "grid-cols-1",
 };
 
 interface LastKnown {

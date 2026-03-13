@@ -18,15 +18,16 @@ interface GridFormation {
   positions: Record<number, { x: number; y: number }>;
 }
 
+/** Vertical stack: 1 column, N rows. Each agent is a full-width horizontal strip. */
 const FORMATIONS: Record<number, GridFormation> = {
   1: { cols: 1, rows: 1, positions: { 1: { x: 0, y: 0 } } },
-  2: { cols: 2, rows: 1, positions: { 1: { x: 0, y: 0 }, 2: { x: 1, y: 0 } } },
-  3: { cols: 2, rows: 2, positions: { 1: { x: 0, y: 0 }, 2: { x: 1, y: 0 }, 3: { x: 0, y: 1 } } },
-  4: { cols: 2, rows: 2, positions: { 1: { x: 0, y: 0 }, 2: { x: 1, y: 0 }, 3: { x: 0, y: 1 }, 4: { x: 1, y: 1 } } },
-  5: { cols: 3, rows: 2, positions: { 1: { x: 0, y: 0 }, 2: { x: 1, y: 0 }, 3: { x: 2, y: 0 }, 4: { x: 0, y: 1 }, 5: { x: 1, y: 1 } } },
-  6: { cols: 3, rows: 2, positions: { 1: { x: 0, y: 0 }, 2: { x: 1, y: 0 }, 3: { x: 2, y: 0 }, 4: { x: 0, y: 1 }, 5: { x: 1, y: 1 }, 6: { x: 2, y: 1 } } },
-  7: { cols: 4, rows: 2, positions: { 1: { x: 0, y: 0 }, 2: { x: 1, y: 0 }, 3: { x: 2, y: 0 }, 4: { x: 3, y: 0 }, 5: { x: 0, y: 1 }, 6: { x: 1, y: 1 }, 7: { x: 2, y: 1 } } },
-  8: { cols: 4, rows: 2, positions: { 1: { x: 0, y: 0 }, 2: { x: 1, y: 0 }, 3: { x: 2, y: 0 }, 4: { x: 3, y: 0 }, 5: { x: 0, y: 1 }, 6: { x: 1, y: 1 }, 7: { x: 2, y: 1 }, 8: { x: 3, y: 1 } } },
+  2: { cols: 1, rows: 2, positions: { 1: { x: 0, y: 0 }, 2: { x: 0, y: 1 } } },
+  3: { cols: 1, rows: 3, positions: { 1: { x: 0, y: 0 }, 2: { x: 0, y: 1 }, 3: { x: 0, y: 2 } } },
+  4: { cols: 1, rows: 4, positions: { 1: { x: 0, y: 0 }, 2: { x: 0, y: 1 }, 3: { x: 0, y: 2 }, 4: { x: 0, y: 3 } } },
+  5: { cols: 1, rows: 5, positions: { 1: { x: 0, y: 0 }, 2: { x: 0, y: 1 }, 3: { x: 0, y: 2 }, 4: { x: 0, y: 3 }, 5: { x: 0, y: 4 } } },
+  6: { cols: 1, rows: 6, positions: { 1: { x: 0, y: 0 }, 2: { x: 0, y: 1 }, 3: { x: 0, y: 2 }, 4: { x: 0, y: 3 }, 5: { x: 0, y: 4 }, 6: { x: 0, y: 5 } } },
+  7: { cols: 1, rows: 7, positions: { 1: { x: 0, y: 0 }, 2: { x: 0, y: 1 }, 3: { x: 0, y: 2 }, 4: { x: 0, y: 3 }, 5: { x: 0, y: 4 }, 6: { x: 0, y: 5 }, 7: { x: 0, y: 6 } } },
+  8: { cols: 1, rows: 8, positions: { 1: { x: 0, y: 0 }, 2: { x: 0, y: 1 }, 3: { x: 0, y: 2 }, 4: { x: 0, y: 3 }, 5: { x: 0, y: 4 }, 6: { x: 0, y: 5 }, 7: { x: 0, y: 6 }, 8: { x: 0, y: 7 } } },
 };
 
 function getFormation(agentCount: number): GridFormation {

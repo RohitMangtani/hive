@@ -3,28 +3,23 @@
 One screen for all your AI agents. Find My iPhone, but for terminal agents. macOS only.
 
 ```
-  Your terminals (4 agents)              Your phone
-┌───────────┬───────────┐          ┌─────────────────┐
-│  Agent 1  │  Agent 2  │          │ ● Q1    ● Q2    │
-│  (Q1)     │  (Q2)     │   ───►   │ green   red     │
-├───────────┼───────────┤          │ ● Q3    ● Q4    │
-│  Agent 3  │  Agent 4  │          │ yellow  green    │
-│  (Q3)     │  (Q4)     │          └─────────────────┘
-└───────────┴───────────┘
-
-  Your terminals (8 agents)              Your phone
-┌──────┬──────┬──────┬──────┐    ┌───────────────────────┐
-│  Q1  │  Q2  │  Q3  │  Q4  │    │ ● Q1  ● Q2  ● Q3  ● Q4 │
-├──────┼──────┼──────┼──────┤ ►  │ ● Q5  ● Q6  ● Q7  ● Q8 │
-│  Q5  │  Q6  │  Q7  │  Q8  │    └───────────────────────┘
-└──────┴──────┴──────┴──────┘
+  Your terminals                    Your phone
+┌─────────────────────┐       ┌─────────────────────┐
+│  ● Agent 1 (green)  │       │  ● Agent 1  green   │
+├─────────────────────┤       ├─────────────────────┤
+│  ● Agent 2 (red)    │       │  ● Agent 2  red     │
+├─────────────────────┤  ───► ├─────────────────────┤
+│  ● Agent 3 (yellow) │       │  ● Agent 3  yellow  │
+├─────────────────────┤       ├─────────────────────┤
+│  ● Agent 4 (green)  │       │  ● Agent 4  green   │
+└─────────────────────┘       └─────────────────────┘
 ```
 
-The dashboard maps 1:1 to your terminal layout. Top-left terminal is top-left tile. Bottom-right terminal is bottom-right tile. Green means working. Red means done. Yellow means stuck. You look at your phone and know exactly which terminal needs attention without reading a single line of output.
+The dashboard maps 1:1 to your terminal layout. Terminals stack vertically on your screen, tiles stack vertically on the dashboard. Top terminal is top tile. Bottom terminal is bottom tile. Green means working. Red means done. Yellow means stuck. You look at your phone and know exactly which terminal needs attention without reading a single line of output.
 
-The daemon reads the physical position of each Terminal window on your screen and assigns slots to match. Move a terminal to the top-right corner, it becomes Q2 on the dashboard. The spatial mapping stays consistent because it tracks where your windows actually are, not what order you opened them. The grid adapts: 2x2 for up to 4 agents, 3x2 for 5-6, 4x2 for 7-8.
+The daemon reads the vertical position of each Terminal window on your screen and assigns slots to match. Move a terminal higher on screen, it moves up in the dashboard stack. The layout stays consistent because it tracks where your windows actually are, not what order you opened them.
 
-You can run anywhere from 1 to 8 agents. Empty slots show "OFFLINE" on the dashboard. Start with two agents and scale up as your workflow demands.
+You can run anywhere from 1 to 8 agents. Each agent is a full-width horizontal strip stacked top to bottom. Start with two agents and scale up as your workflow demands.
 
 One person. Up to eight agents. The output of a team.
 
@@ -32,7 +27,7 @@ One person. Up to eight agents. The output of a team.
 
 Running one AI agent is manageable. Running several at once on different tasks is where things break down. You lose track of which one finished, which one is stuck, and which one drifted from what you asked. You end up alt-tabbing between terminals, re-reading output, and spending more energy tracking status than directing work.
 
-The spatial layout solves this. Your brain is good at spatial memory. When you arrange terminals in a grid and the dashboard mirrors that grid, you stop thinking in terminal names and start thinking in positions. "Top-left is building the API, bottom-right is writing tests." You glance at colored dots and know the state of everything in under a second.
+The vertical stack solves this. Your brain is good at spatial memory. When you stack terminals top to bottom and the dashboard mirrors that stack, you stop thinking in terminal names and start thinking in positions. "Top is building the API, third from the top is writing tests." You glance at colored dots and know the state of everything in under a second.
 
 **You catch problems by looking, not reading.** All green dots means everything is fine. One yellow dot and your eye goes straight to it. You do not read logs. You do not scroll. Color is faster than text because your brain processes it before you consciously look. The spatial layout tells you which terminal to switch to without thinking.
 
@@ -52,7 +47,7 @@ The spatial layout solves this. Your brain is good at spatial memory. When you a
 
 ## What You Get
 
-- **Stoplight dashboard** — adaptive grid (2x2 up to 4x2) that mirrors your terminal layout. Green/red/yellow at a glance. Open on your phone, tablet, or second monitor. The tile positions match your terminal positions. Supports 1-8 agents.
+- **Stoplight dashboard** — vertical stack that mirrors your terminal layout. Green/red/yellow at a glance. Open on your phone, tablet, or second monitor. The tile order matches your terminal order top to bottom. Supports 1-8 agents.
 - **Multi-model** — run Claude, Codex, and OpenClaw agents side by side. Each tile shows which model is running. Spawn any from the dashboard.
 - **Auto-discovery** — start `claude`, `codex`, or `openclaw tui` in any terminal and it appears on the dashboard within 3 seconds. Quadrants are assigned by where the terminal sits on your screen, not by start order. No registration, no config.
 - **Auto-pilot** — permission prompts auto-approve after a 15-second grace window. Agents never sit idle waiting for a click.
@@ -181,7 +176,7 @@ or
 openclaw tui
 ```
 
-Arrange your terminal windows on screen. The daemon detects their positions and maps each one to the matching tile on the dashboard. The grid adapts: 2x2 for up to 4, 3x2 for 5-6, 4x2 for 7-8. Mix `claude`, `codex`, and `openclaw` however you want. You can also spawn agents directly from the dashboard by tapping an empty "OFFLINE" tile.
+Stack your terminal windows vertically on screen. The daemon detects their positions and maps each one to the matching tile in the dashboard stack. Mix `claude`, `codex`, and `openclaw` however you want. You can also spawn agents directly from the dashboard by tapping an empty "OFFLINE" tile.
 
 **4. Install the app on your phone** (optional, recommended)
 
@@ -198,7 +193,7 @@ Open the dashboard URL on your phone and add it to your home screen. It runs ful
 ## How It Works
 
 ### Auto-Discovery
-Detects Claude, Codex, and OpenClaw processes within 3 seconds via `ps` + `lsof`. No configuration needed. Start `claude`, `codex`, or `openclaw tui` in any terminal and the daemon finds it. Supports up to 8 agents simultaneously. The daemon reads the physical position of each Terminal window on your screen every 10 seconds and assigns slots to match. If you drag a terminal from top-left to bottom-right, it becomes the bottom-right tile on the dashboard within 10 seconds. Tab titles update automatically to show which slot each terminal is.
+Detects Claude, Codex, and OpenClaw processes within 3 seconds via `ps` + `lsof`. No configuration needed. Start `claude`, `codex`, or `openclaw tui` in any terminal and the daemon finds it. Supports up to 8 agents simultaneously. The daemon reads the vertical position of each Terminal window on your screen every 10 seconds and assigns slots to match. Move a terminal higher on screen, it moves up in the dashboard stack. Tab titles update automatically to show which slot each terminal is.
 
 ### Status Tracking
 Multi-layer detection pipeline determines real-time status:
@@ -425,7 +420,7 @@ Daemon (Node.js, port 3001 + 3002)
 └── WebSocket     — pushes live state to dashboard every 3 seconds
 
 Dashboard (Next.js, port 3000 — installable as PWA)
-├── Adaptive grid — stoplight status cards matching terminal layout (2x2 to 4x2)
+├── Vertical stack — stoplight status cards matching terminal layout top to bottom
 ├── Live chat     — stream each agent's conversation history
 ├── Review queue  — slide-out drawer of recent pushes, deploys, and PRs
 ├── Controls      — send messages, spawn agents, view queue
