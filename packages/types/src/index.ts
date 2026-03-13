@@ -44,7 +44,7 @@ export interface TelemetryEvent {
 }
 
 export interface DaemonMessage {
-  type: "spawn" | "kill" | "message" | "selection" | "list" | "orchestrator" | "subscribe" | "unsubscribe" | "suggestion_feedback";
+  type: "spawn" | "kill" | "message" | "selection" | "list" | "orchestrator" | "subscribe" | "unsubscribe" | "suggestion_feedback" | "review_seen" | "review_dismiss" | "review_seen_all" | "review_clear_all";
   workerId?: string;
   project?: string;
   task?: string;
@@ -56,6 +56,8 @@ export interface DaemonMessage {
   appliedLabel?: string;
   /** Phase 4: all suggestion labels that were shown */
   shownLabels?: string[];
+  /** Review ID for review mutations */
+  reviewId?: string;
 }
 
 export interface ChatEntry {

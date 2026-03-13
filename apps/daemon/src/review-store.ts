@@ -5,7 +5,7 @@ import { randomBytes } from "crypto";
 const HOME = process.env.HOME || `/Users/${process.env.USER}`;
 const REVIEWS_PATH = join(HOME, ".hive", "reviews.json");
 const REVIEW_TTL = 48 * 60 * 60 * 1000; // 48 hours auto-expiry
-const MAX_REVIEWS = 100;
+const MAX_REVIEWS = 50;
 
 export interface ReviewItem {
   id: string;
@@ -116,6 +116,13 @@ export class ReviewStore {
     const deleted = this.items.delete(id);
     if (deleted) this.save();
     return deleted;
+  }
+
+  clearAll(): number {
+    const count = this.items.size;
+    this.items.clear();
+    this.save();
+    return count;
   }
 
   expire(): void {

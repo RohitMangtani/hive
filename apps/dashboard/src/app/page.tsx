@@ -135,7 +135,7 @@ export default function Home() {
     if (savedAgent) setSelectedId(savedAgent);
   }, []);
 
-  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect, reviews, markReviewSeen, dismissReview, markAllReviewsSeen } = useHive(daemonUrl);
+  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect, reviews, markReviewSeen, dismissReview, markAllReviewsSeen, clearAllReviews } = useHive(daemonUrl);
   const [authError, setAuthError] = useState(false);
 
   useEffect(() => {
@@ -460,6 +460,7 @@ export default function Home() {
         onDismiss={dismissReview}
         onMarkSeen={markReviewSeen}
         onMarkAllSeen={markAllReviewsSeen}
+        onClearAll={clearAllReviews}
       />
 
     </div>

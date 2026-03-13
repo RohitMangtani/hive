@@ -1606,8 +1606,34 @@ export class TelemetryReceiver {
     return this.reviewStore.dismiss(id);
   }
 
+  clearAllReviews(): number {
+    return this.reviewStore.clearAll();
+  }
+
   onReviewAdded(listener: (review: ReviewItem) => void): void {
     this.reviewListeners.push(listener);
+  }
+
+  /** Resolve GitHub URL from a worker's project path */
+  private resolveGitUrl(worker: WorkerState): string | undefined {
+    try {
+      const { execFileSync } = require("child_process");
+      const remote = execFileSync("git", ["remote", "get-url", "origin"], {
+        cwd: worker.project,
+        encoding: "utf-8",
+        timeout: 3000,
+      }).trim();
+      // Convert git@github.com:User/Repo.git or https://github.com/User/Repo.git to https://github.com/User/Repo
+      if (remote.startsWith("git@github.com:")) {
+        return "https://github.com/" + remote.slice(15).replace(/\.git$/, "");
+      }
+      if (remote.includes("github.com")) {
+        return remote.replace(/\.git$/, "");
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Auto-detect reviewable actions from Bash tool_input */
@@ -1621,24 +1647,30 @@ export class TelemetryReceiver {
 
     const cmdLower = command.toLowerCase();
 
+    const gitUrl = this.resolveGitUrl(worker);
+
     // git push
     if (/\bgit\s+push\b/.test(cmdLower)) {
+      console.log(`[review] Auto-detected push by ${worker.tty || workerId} in ${worker.projectName}`);
       this.addReview(
         `Pushed changes to ${worker.projectName}`,
         workerId,
         worker.projectName,
-        { type: "push" },
+        { type: "push", url: gitUrl },
       );
       return;
     }
 
     // gh pr create
     if (/\bgh\s+pr\s+create\b/.test(cmdLower)) {
+      console.log(`[review] Auto-detected PR by ${worker.tty || workerId} in ${worker.projectName}`);
+      // PR URL will be self-reported by agent via POST /api/reviews with exact URL
+      // Auto-detected entry links to repo for now
       this.addReview(
         `Created PR in ${worker.projectName}`,
         workerId,
         worker.projectName,
-        { type: "pr" },
+        { type: "pr", url: gitUrl ? `${gitUrl}/pulls` : undefined },
       );
       return;
     }
@@ -1660,7 +1692,7 @@ export class TelemetryReceiver {
         `Committed and pushed ${worker.projectName}`,
         workerId,
         worker.projectName,
-        { type: "push" },
+        { type: "push", url: gitUrl },
       );
       return;
     }
@@ -1806,6 +1838,11 @@ export class TelemetryReceiver {
         worker.lastAction = action;
         this.recordSignal(workerId, "PreToolUse", action);
 
+        // Auto-detect reviewable actions from Bash commands (PreToolUse has guaranteed tool_input)
+        if (toolName === "Bash" && toolInput) {
+          this.autoDetectReview(workerId, worker, toolInput);
+        }
+
         // File lock enforcement: block Edit/Write if another agent holds the lock
         if ((toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit") && toolInput) {
           const filePath = (toolInput.file_path || toolInput.notebook_path) as string | undefined;
@@ -1841,10 +1878,7 @@ export class TelemetryReceiver {
             // Auto-acquire lock on successful write
             this.lockManager.acquire(filePath, workerId);
           }
-          // Auto-detect reviewable actions from Bash commands
-          if (toolName === "Bash") {
-            this.autoDetectReview(workerId, worker, toolInput);
-          }
+          // Review detection moved to PreToolUse (guaranteed tool_input)
         }
         break;
       }

@@ -102,6 +102,8 @@ export class WsServer {
       this.lastWorkersSnapshot = JSON.stringify(workers);
       this.send(ws, { type: "workers", workers });
       this.send(ws, { type: "auth", admin: isAdmin });
+      // Send full review list on connect (hosted dashboard can't reach REST on port 3001)
+      this.send(ws, { type: "reviews", reviews: this.telemetry.getReviews() });
 
       ws.on("message", (raw) => {
         let msg: DaemonMessage;
@@ -219,11 +221,14 @@ export class WsServer {
           return;
         }
 
-        const model = (msg.model === "codex" ? "codex" : "claude") as "claude" | "codex";
+        const model = msg.model || "claude";
         const openQ = this.telemetry.getFirstOpenQuadrant();
 
+        // Auto-send an init message after the agent starts (task or "hi")
+        const initMessage = msg.task?.trim() || "hi";
+
         // Open a real Terminal window with the CLI, positioned in the first open corner
-        const termResult = spawnTerminalWindow(real, model, openQ);
+        const termResult = spawnTerminalWindow(real, model, openQ, initMessage);
         if (!termResult.ok) {
           this.send(ws, { type: "error", error: termResult.error || "Failed to spawn terminal" });
           return;
@@ -328,6 +333,31 @@ export class WsServer {
             msg.shownLabels
           );
         }
+        break;
+      }
+
+      case "review_seen": {
+        if (msg.reviewId) {
+          this.telemetry.markReviewSeen(msg.reviewId);
+        }
+        break;
+      }
+
+      case "review_dismiss": {
+        if (msg.reviewId) {
+          this.telemetry.dismissReview(msg.reviewId);
+        }
+        break;
+      }
+
+      case "review_seen_all": {
+        this.telemetry.markAllReviewsSeen();
+        break;
+      }
+
+      case "review_clear_all": {
+        this.telemetry.clearAllReviews();
+        this.broadcast({ type: "reviews", reviews: [] });
         break;
       }
 

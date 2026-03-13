@@ -284,7 +284,7 @@ export function registerApiRoutes(
 
   // POST /api/spawn
   app.post("/api/spawn", requireAuth, (req, res) => {
-    const { project, model: rawModel } = req.body as { project?: string; model?: string };
+    const { project, model: rawModel, task } = req.body as { project?: string; model?: string; task?: string };
     if (!project) {
       res.status(400).json({ error: "Missing project" });
       return;
@@ -312,8 +312,9 @@ export function registerApiRoutes(
     }
 
     const model = typeof rawModel === "string" && rawModel ? rawModel : "claude";
+    const initMessage = typeof task === "string" && task.trim() ? task.trim() : "hi";
     const openQ = receiver.getFirstOpenQuadrant();
-    const result = spawnTerminalWindow(realPath, model, openQ);
+    const result = spawnTerminalWindow(realPath, model, openQ, initMessage);
     if (!result.ok) {
       res.status(500).json({ error: result.error || "Failed to spawn terminal" });
       return;
@@ -403,6 +404,12 @@ export function registerApiRoutes(
     } else {
       res.status(404).json({ error: `Review ${req.params.id} not found` });
     }
+  });
+
+  // DELETE /api/reviews — clear all reviews
+  app.delete("/api/reviews", requireAuth, (_req, res) => {
+    const count = receiver.clearAllReviews();
+    res.json({ ok: true, cleared: count });
   });
 
   // GET /api/notifications/config

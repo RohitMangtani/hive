@@ -51,18 +51,7 @@ export function useHive(daemonUrl: string) {
     [send]
   );
 
-  // Fetch reviews via REST on connect (WS only pushes new ones)
-  useEffect(() => {
-    if (!connected || !daemonUrl) return;
-    const httpUrl = daemonUrl.replace(/^ws/, "http").replace(/:\d+$/, ":3001");
-    const token = localStorage.getItem("hive_token") || "";
-    fetch(`${httpUrl}/api/reviews`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-      .then(r => r.ok ? r.json() : [])
-      .then((data: ReviewItem[]) => { if (Array.isArray(data)) setReviews(data); })
-      .catch(() => { /* non-critical */ });
-  }, [connected, daemonUrl]);
+  // Reviews are sent over WS on connect (no REST needed — tunnel only exposes WS port)
 
   useEffect(() => {
     if (!daemonUrl) return;
@@ -219,6 +208,13 @@ export function useHive(daemonUrl: string) {
             break;
           }
 
+          case "reviews": {
+            if (data.reviews && Array.isArray(data.reviews)) {
+              setReviews(data.reviews);
+            }
+            break;
+          }
+
           case "review_added": {
             if (data.review) {
               const newReview = data.review;
@@ -304,48 +300,40 @@ export function useHive(daemonUrl: string) {
   const markReviewSeen = useCallback(
     (id: string) => {
       setReviews((prev) => prev.map(r => r.id === id ? { ...r, seen: true } : r));
-      // Fire and forget the API call
-      const httpUrl = daemonUrl.replace(/^ws/, "http").replace(/:\d+$/, ":3001");
-      const token = localStorage.getItem("hive_token") || "";
-      fetch(`${httpUrl}/api/reviews/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ action: "seen" }),
-      }).catch(() => { /* non-critical */ });
+      send({ type: "review_seen", reviewId: id });
     },
-    [daemonUrl]
+    [send]
   );
 
   /** Dismiss a review */
   const dismissReview = useCallback(
     (id: string) => {
       setReviews((prev) => prev.filter(r => r.id !== id));
-      const httpUrl = daemonUrl.replace(/^ws/, "http").replace(/:\d+$/, ":3001");
-      const token = localStorage.getItem("hive_token") || "";
-      fetch(`${httpUrl}/api/reviews/${id}`, {
-        method: "DELETE",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      }).catch(() => { /* non-critical */ });
+      send({ type: "review_dismiss", reviewId: id });
     },
-    [daemonUrl]
+    [send]
   );
 
   /** Mark all reviews as seen */
   const markAllReviewsSeen = useCallback(
     () => {
       setReviews((prev) => prev.map(r => ({ ...r, seen: true })));
-      const httpUrl = daemonUrl.replace(/^ws/, "http").replace(/:\d+$/, ":3001");
-      const token = localStorage.getItem("hive_token") || "";
-      fetch(`${httpUrl}/api/reviews`, {
-        method: "PATCH",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      }).catch(() => { /* non-critical */ });
+      send({ type: "review_seen_all" });
     },
-    [daemonUrl]
+    [send]
+  );
+
+  /** Clear all reviews */
+  const clearAllReviews = useCallback(
+    () => {
+      setReviews([]);
+      send({ type: "review_clear_all" });
+    },
+    [send]
   );
 
   return {
     connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect,
-    reviews, markReviewSeen, dismissReview, markAllReviewsSeen,
+    reviews, markReviewSeen, dismissReview, markAllReviewsSeen, clearAllReviews,
   };
 }
