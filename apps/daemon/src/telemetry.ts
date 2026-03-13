@@ -801,6 +801,7 @@ export class TelemetryReceiver {
     this.idleConfirmed.delete(id);
     this.lastInputSent.delete(id);
     this.lockManager.releaseAll(id);
+    this.quadrantAssignments.delete(id);
     for (const [sid, wid] of this.sessionToWorker) {
       if (wid === id) {
         this.sessionToWorker.delete(sid);

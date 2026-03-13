@@ -48,6 +48,21 @@ export class SessionStreamer {
     return this.sessionFiles.get(workerId) || null;
   }
 
+  /** Clean up all state for a removed worker (session file, pending subs, active subs) */
+  clearWorker(workerId: string): void {
+    this.sessionFiles.delete(workerId);
+    this.pendingSubs = this.pendingSubs.filter(p => p.workerId !== workerId);
+    // Remove any active subscriptions for this worker
+    for (const [key, sub] of this.subscriptions) {
+      if (key.startsWith(workerId + "_")) {
+        clearInterval(sub.timer);
+        for (const t of sub.nudgeTimers) clearTimeout(t);
+        if (sub.watcher) sub.watcher.close();
+        this.subscriptions.delete(key);
+      }
+    }
+  }
+
   /**
    * Find the best session file for a worker by scanning .claude/projects/
    */

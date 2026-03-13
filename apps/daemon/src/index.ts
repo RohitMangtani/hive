@@ -33,6 +33,7 @@ telemetry.registerProcessManager(procMgr);
 telemetry.registerApi(procMgr, discovery);
 telemetry.registerCollector(collector);
 telemetry.setStreamer(streamer);
+telemetry.onRemoval((workerId) => streamer.clearWorker(workerId));
 ws.start();
 
 // Restore state from previous daemon run (if fresh enough)

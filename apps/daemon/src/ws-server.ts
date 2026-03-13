@@ -288,13 +288,18 @@ export class WsServer {
           try { process.kill(killPid, "SIGKILL"); } catch { /* already gone */ }
         }
 
+        // Remove from telemetry immediately (before discovery can re-discover)
+        this.telemetry.removeWorker(msg.workerId);
+
         // Close the Terminal.app window/tab after process is dead (no dialog)
         if (killTty) {
-          setTimeout(() => closeTerminalWindow(killTty), 500);
+          setTimeout(() => {
+            const result = closeTerminalWindow(killTty);
+            if (!result.ok) {
+              console.log(`[kill] Failed to close terminal ${killTty}: ${result.error}`);
+            }
+          }, 500);
         }
-
-        // Ensure removed from telemetry (in case procMgr didn't handle it)
-        this.telemetry.removeWorker(msg.workerId);
         console.log(`Killed worker ${msg.workerId} (pid=${killPid}, tty=${killTty})`);
         break;
       }
