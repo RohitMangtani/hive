@@ -1629,7 +1629,7 @@ export class TelemetryReceiver {
   private resolveGitBranch(worker: WorkerState): string | undefined {
     try {
       const { execFileSync } = require("child_process");
-      return execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
+      return execFileSync("/usr/bin/git", ["symbolic-ref", "--short", "HEAD"], {
         cwd: worker.project,
         encoding: "utf-8",
         timeout: 3000,
@@ -1643,7 +1643,7 @@ export class TelemetryReceiver {
   private resolveGitUrl(worker: WorkerState): string | undefined {
     try {
       const { execFileSync } = require("child_process");
-      const remote = execFileSync("git", ["remote", "get-url", "origin"], {
+      const remote = execFileSync("/usr/bin/git", ["remote", "get-url", "origin"], {
         cwd: worker.project,
         encoding: "utf-8",
         timeout: 3000,
@@ -1665,7 +1665,7 @@ export class TelemetryReceiver {
   private resolveGitRepoName(worker: WorkerState): string {
     try {
       const { execFileSync } = require("child_process");
-      const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      const root = execFileSync("/usr/bin/git", ["rev-parse", "--show-toplevel"], {
         cwd: worker.project,
         encoding: "utf-8",
         timeout: 3000,
