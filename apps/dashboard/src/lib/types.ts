@@ -4,4 +4,5 @@ export type {
   ChatEntry,
   DaemonMessage,
   DaemonResponse,
+  ReviewItem,
 } from "@hive/types";

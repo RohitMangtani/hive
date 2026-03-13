@@ -47,6 +47,13 @@ export class WsServer {
       });
     });
 
+    this.telemetry.onReviewAdded((review) => {
+      this.broadcast({
+        type: "review_added",
+        review,
+      });
+    });
+
     this.telemetry.onRemoval(() => {
       const workers = this.telemetry.getAll();
       this.lastWorkersSnapshot = JSON.stringify(workers);

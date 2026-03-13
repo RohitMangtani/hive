@@ -20,6 +20,8 @@ import { registerApiRoutes } from "./api-routes.js";
 import { updateTerminalTitles, detectQuadrantsFromWindowPositions, positionWindowToQuadrant } from "./arrange-windows.js";
 import type { Collector } from "./collector.js";
 import { SuggestionEngine } from "./suggestion-engine.js";
+import { ReviewStore } from "./review-store.js";
+import type { ReviewItem } from "./review-store.js";
 
 const IDLE_THRESHOLD = 30_000;
 const HOME = process.env.HOME || `/Users/${process.env.USER}`;
@@ -136,6 +138,10 @@ export class TelemetryReceiver {
   private taskQueue: TaskQueue;
   private scratchpad: Scratchpad;
   private lockManager: LockManager;
+  private reviewStore: ReviewStore;
+
+  // Review listeners (for WS broadcast of new reviews)
+  private reviewListeners: Array<(review: ReviewItem) => void> = [];
 
   private token: string;
   private collector: Collector | null = null;
@@ -146,6 +152,7 @@ export class TelemetryReceiver {
     this.token = token;
     this.taskQueue = new TaskQueue();
     this.scratchpad = new Scratchpad();
+    this.reviewStore = new ReviewStore();
     this.lockManager = new LockManager(
       (id) => this.workers.has(id),
       (id) => this.workers.get(id)?.tty,
@@ -1000,6 +1007,7 @@ export class TelemetryReceiver {
     this.dispatchFromQueue();
     this.expirePendingHooks();
     this.scratchpad.expire();
+    this.reviewStore.expire();
   }
 
   notifyExternal(worker: WorkerState): void {
@@ -1561,6 +1569,103 @@ export class TelemetryReceiver {
     return this.scratchpad.delete(key);
   }
 
+  // --- Review store facade ---
+
+  addReview(
+    summary: string,
+    workerId: string,
+    projectName: string,
+    opts?: { url?: string; type?: ReviewItem["type"]; quadrant?: number },
+  ): ReviewItem {
+    const quadrant = opts?.quadrant ?? this.quadrantAssignments.get(workerId);
+    const review = this.reviewStore.add(summary, workerId, projectName, { ...opts, quadrant });
+    // Notify WS listeners
+    for (const listener of this.reviewListeners) {
+      listener(review);
+    }
+    return review;
+  }
+
+  getReviews(): ReviewItem[] {
+    return this.reviewStore.getAll();
+  }
+
+  getUnseenReviews(): ReviewItem[] {
+    return this.reviewStore.getUnseen();
+  }
+
+  markReviewSeen(id: string): boolean {
+    return this.reviewStore.markSeen(id);
+  }
+
+  markAllReviewsSeen(): number {
+    return this.reviewStore.markAllSeen();
+  }
+
+  dismissReview(id: string): boolean {
+    return this.reviewStore.dismiss(id);
+  }
+
+  onReviewAdded(listener: (review: ReviewItem) => void): void {
+    this.reviewListeners.push(listener);
+  }
+
+  /** Auto-detect reviewable actions from Bash tool_input */
+  private autoDetectReview(
+    workerId: string,
+    worker: WorkerState,
+    toolInput: Record<string, unknown>,
+  ): void {
+    const command = (toolInput.command || toolInput.description || "") as string;
+    if (!command) return;
+
+    const cmdLower = command.toLowerCase();
+
+    // git push
+    if (/\bgit\s+push\b/.test(cmdLower)) {
+      this.addReview(
+        `Pushed changes to ${worker.projectName}`,
+        workerId,
+        worker.projectName,
+        { type: "push" },
+      );
+      return;
+    }
+
+    // gh pr create
+    if (/\bgh\s+pr\s+create\b/.test(cmdLower)) {
+      this.addReview(
+        `Created PR in ${worker.projectName}`,
+        workerId,
+        worker.projectName,
+        { type: "pr" },
+      );
+      return;
+    }
+
+    // vercel deploy (or npx vercel)
+    if (/\bvercel\b/.test(cmdLower) && (/\bdeploy\b/.test(cmdLower) || /\bnpx\s+vercel\b/.test(cmdLower) || /^vercel(\s|$)/.test(cmdLower.trim()))) {
+      this.addReview(
+        `Deployed ${worker.projectName}`,
+        workerId,
+        worker.projectName,
+        { type: "deploy" },
+      );
+      return;
+    }
+
+    // npm run build + git push in same command chain
+    if (/\bgit\s+commit\b/.test(cmdLower) && /\bgit\s+push\b/.test(cmdLower)) {
+      this.addReview(
+        `Committed and pushed ${worker.projectName}`,
+        workerId,
+        worker.projectName,
+        { type: "push" },
+      );
+      return;
+    }
+  }
+
   // --- Lock manager facade ---
 
   acquireLock(filePath: string, workerId: string): { acquired: boolean; holder?: { workerId: string; tty?: string; lockedAt: number } } {
@@ -1735,6 +1840,10 @@ export class TelemetryReceiver {
             this.recordArtifact(workerId, filePath, toolName === "Edit" ? "edited" : "created");
             // Auto-acquire lock on successful write
             this.lockManager.acquire(filePath, workerId);
+          }
+          // Auto-detect reviewable actions from Bash commands
+          if (toolName === "Bash") {
+            this.autoDetectReview(workerId, worker, toolInput);
           }
         }
         break;

@@ -55,6 +55,7 @@ The quadrant layout solves this. Your brain is good at spatial memory. When you 
 - **Workflow handoff** — tag related tasks with a workflow ID. When Agent 1 finishes "Build the API," Agent 2 automatically receives a summary of what was built and which files changed before starting "Build the UI."
 - **Compound learning** — every solved problem gets written to a per-project knowledge file. Fresh agents start with accumulated knowledge instead of a blank slate.
 - **State persistence** — daemon snapshots state every 30 seconds. Restart your computer, reopen terminals, and routing restores after one prompt per terminal.
+- **Review queue** — a slide-out drawer on the dashboard showing recent pushes, deploys, and PRs across all agents. The daemon auto-detects reviewable actions from hook events, and agents can self-report with richer summaries. Tap the three-line icon in the header to see what changed and where.
 - **Push notifications** — when an agent goes yellow, macOS sends a native notification with the project name and what it needs.
 
 ## Prerequisites
@@ -295,6 +296,17 @@ All endpoints require the auth token from `~/.hive/token` via the `Authorization
 | `POST` | `/api/learning` | `{project, lesson}` | Persist a lesson to the project's learning file |
 | `GET` | `/api/artifacts` | `?workerId=X` (optional) | Recent file changes by an agent |
 
+### Review Queue
+| Method | Endpoint | Body / Query | Description |
+|--------|----------|--------------|-------------|
+| `GET` | `/api/reviews` | `?unseen=1` (optional) | List review items. Add `?unseen=1` for unread only. |
+| `POST` | `/api/reviews` | `{summary, url?, type?, workerId?}` | Report a reviewable change. Type: deploy/commit/pr/push/review-needed/general. |
+| `PATCH` | `/api/reviews/:id` | `{action: "seen"}` | Mark a review as seen |
+| `PATCH` | `/api/reviews` | — | Mark all reviews as seen |
+| `DELETE` | `/api/reviews/:id` | — | Dismiss a review |
+
+The daemon also auto-detects `git push`, `gh pr create`, and Vercel deploys from hook events and creates review items automatically. Agents can self-report with richer summaries via the POST endpoint.
+
 ### Diagnostics
 | Method | Endpoint | Query | Description |
 |--------|----------|-------|-------------|
@@ -408,6 +420,7 @@ Daemon (Node.js, port 3001 + 3002)
 Dashboard (Next.js, port 3000 — installable as PWA)
 ├── 2×2 grid      — stoplight status cards matching terminal layout
 ├── Live chat     — stream each agent's conversation history
+├── Review queue  — slide-out drawer of recent pushes, deploys, and PRs
 ├── Controls      — send messages, spawn agents, view queue
 └── Service worker — offline caching, instant repeat loads
 ```
@@ -431,6 +444,7 @@ Dashboard (Next.js, port 3000 — installable as PWA)
 | `apps/daemon/src/notifications.ts` | macOS push notifications on stuck |
 | `apps/daemon/src/task-queue.ts` | Global task queue |
 | `apps/daemon/src/lock-manager.ts` | File lock coordination |
+| `apps/daemon/src/review-store.ts` | Review queue for tracking reviewable changes |
 | `apps/daemon/src/scratchpad.ts` | Ephemeral shared notes |
 | `apps/daemon/src/session-stream.ts` | Chat history streaming from JSONL |
 | `tools/send-return.swift` | CGEvent binary source (Return keystroke) |

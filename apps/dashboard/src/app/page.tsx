@@ -6,6 +6,7 @@ import { getAuthMode, unlockAdmin, lockAdmin } from "@/components/SitePasswordGa
 import { SpawnDialog } from "@/components/SpawnDialog";
 import { AgentCard, DOT_BG } from "@/components/AgentCard";
 import { ChatPanel } from "@/components/ChatPanel";
+import { ReviewDrawer } from "@/components/ReviewDrawer";
 import type { WorkerState } from "@/lib/types";
 
 const DEFAULT_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3002";
@@ -65,6 +66,7 @@ export default function Home() {
   const [, setDraftTick] = useState(0);
   const [flaggedIds, setFlaggedIds] = useState<Set<string>>(new Set());
   const previewUrlsRef = useRef<Map<string, string>>(new Map());
+  const [showReviews, setShowReviews] = useState(false);
 
   useEffect(() => {
     try {
@@ -111,7 +113,7 @@ export default function Home() {
     if (savedAgent) setSelectedId(savedAgent);
   }, []);
 
-  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect } = useHive(daemonUrl);
+  const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect, reviews, markReviewSeen, dismissReview, markAllReviewsSeen } = useHive(daemonUrl);
   const [authError, setAuthError] = useState(false);
 
   useEffect(() => {
@@ -200,6 +202,24 @@ export default function Home() {
               &#128275;
             </button>
           )}
+          {/* Review queue button — right side */}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setShowReviews(true); }}
+            className="absolute right-0 top-0 text-[10px] text-[var(--text-light)] hover:text-[var(--text)] transition-colors px-2 py-1 cursor-pointer"
+            title="Recent changes"
+          >
+            <span className="relative inline-flex items-center">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="1" y="2" width="12" height="1.5" rx="0.75" fill="currentColor" />
+                <rect x="1" y="6.25" width="12" height="1.5" rx="0.75" fill="currentColor" />
+                <rect x="1" y="10.5" width="12" height="1.5" rx="0.75" fill="currentColor" />
+              </svg>
+              {reviews.filter(r => !r.seen).length > 0 && (
+                <span className="absolute -top-1 -right-1.5 w-2 h-2 rounded-full bg-[var(--accent)]" />
+              )}
+            </span>
+          </button>
         </div>
 
         {showUnlock && (
@@ -367,6 +387,15 @@ export default function Home() {
           onClose={() => setShowSpawn(false)}
         />
       )}
+
+      <ReviewDrawer
+        open={showReviews}
+        reviews={reviews}
+        onClose={() => setShowReviews(false)}
+        onDismiss={dismissReview}
+        onMarkSeen={markReviewSeen}
+        onMarkAllSeen={markAllReviewsSeen}
+      />
 
     </div>
   );

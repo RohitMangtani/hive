@@ -354,6 +354,57 @@ export function registerApiRoutes(
     }
   });
 
+  // GET /api/reviews
+  app.get("/api/reviews", requireAuth, (req, res) => {
+    const unseen = req.query.unseen === "1" || req.query.unseen === "true";
+    res.json(unseen ? receiver.getUnseenReviews() : receiver.getReviews());
+  });
+
+  // POST /api/reviews — agent self-reporting
+  app.post("/api/reviews", requireAuth, (req, res) => {
+    const { summary, url, type, workerId } = req.body as {
+      summary?: string; url?: string; type?: string; workerId?: string;
+    };
+    if (!summary) {
+      res.status(400).json({ error: "Missing summary" });
+      return;
+    }
+    // Resolve worker and project name
+    const worker = workerId ? receiver.get(workerId) : undefined;
+    const projectName = worker?.projectName || "unknown";
+    const resolvedWorkerId = workerId || "api";
+    const reviewType = (type || "general") as "deploy" | "commit" | "pr" | "push" | "review-needed" | "general";
+    const review = receiver.addReview(summary, resolvedWorkerId, projectName, { url, type: reviewType });
+    res.json({ ok: true, review });
+  });
+
+  // PATCH /api/reviews/:id — mark as seen
+  app.patch("/api/reviews/:id", requireAuth, (req, res) => {
+    const action = req.body?.action as string | undefined;
+    if (action === "seen") {
+      const ok = receiver.markReviewSeen(req.params.id as string);
+      res.json({ ok });
+    } else {
+      res.status(400).json({ error: "Unknown action" });
+    }
+  });
+
+  // PATCH /api/reviews — mark all seen
+  app.patch("/api/reviews", requireAuth, (_req, res) => {
+    const count = receiver.markAllReviewsSeen();
+    res.json({ ok: true, marked: count });
+  });
+
+  // DELETE /api/reviews/:id
+  app.delete("/api/reviews/:id", requireAuth, (req, res) => {
+    const dismissed = receiver.dismissReview(req.params.id as string);
+    if (dismissed) {
+      res.json({ ok: true });
+    } else {
+      res.status(404).json({ error: `Review ${req.params.id} not found` });
+    }
+  });
+
   // GET /api/notifications/config
   app.get("/api/notifications/config", requireAuth, (_req, res) => {
     const HOME = process.env.HOME || `/Users/${process.env.USER}`;
@@ -370,5 +421,5 @@ export function registerApiRoutes(
     }
   });
 
-  console.log("  Dispatch API registered: /api/workers, /api/context, /api/message, /api/message-queue, /api/queue, /api/locks, /api/conflicts, /api/scratchpad, /api/audit, /api/artifacts, /api/learning, /api/signals, /api/debug, /api/spawn, /api/projects, /api/notifications/config");
+  console.log("  Dispatch API registered: /api/workers, /api/context, /api/message, /api/message-queue, /api/queue, /api/locks, /api/conflicts, /api/scratchpad, /api/audit, /api/artifacts, /api/learning, /api/signals, /api/debug, /api/spawn, /api/projects, /api/reviews, /api/notifications/config");
 }

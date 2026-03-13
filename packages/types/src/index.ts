@@ -66,8 +66,20 @@ export interface ChatEntry {
   _optimisticId?: string;
 }
 
+export interface ReviewItem {
+  id: string;
+  summary: string;
+  url?: string;
+  type: "deploy" | "commit" | "pr" | "push" | "review-needed" | "general";
+  workerId: string;
+  quadrant?: number;
+  projectName: string;
+  createdAt: number;
+  seen: boolean;
+}
+
 export interface DaemonResponse {
-  type: "workers" | "worker_update" | "chat" | "chat_history" | "orchestrator" | "error" | "queued" | "auth";
+  type: "workers" | "worker_update" | "chat" | "chat_history" | "orchestrator" | "error" | "queued" | "auth" | "reviews" | "review_added";
   workers?: WorkerState[];
   worker?: WorkerState;
   workerId?: string;
@@ -77,4 +89,6 @@ export interface DaemonResponse {
   error?: string;
   position?: number;
   admin?: boolean;
+  reviews?: ReviewItem[];
+  review?: ReviewItem;
 }
