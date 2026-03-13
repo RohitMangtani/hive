@@ -427,7 +427,16 @@ end tell
           // passed the trust/sandbox prompts and started a real session.
           const cachedSessionFile = this.streamer.getSessionFile(id);
           if (existing.promptType && cachedSessionFile) {
-            // Session started — prompt was approved (either from dashboard or terminal)
+            // Session file exists — but verify the terminal no longer shows
+            // a prompt before clearing. The session file may be stale (from
+            // state store) while the terminal is still at a trust prompt.
+            const stillPrompt = proc.tty ? this.detectPrompt(proc.tty) : null;
+            if (stillPrompt) {
+              // Prompt still showing — keep state, skip to next worker
+              this.telemetry.notifyExternal(existing);
+              continue;
+            }
+            // Prompt gone — session truly started
             existing.promptType = null;
             existing.promptMessage = undefined;
             existing.terminalPreview = undefined;
@@ -451,10 +460,22 @@ end tell
               existing.status = "waiting";
               existing.currentAction = "Waiting for input...";
             }
-          } else if (cachedSessionFile && proc.tty && existing.status === "idle") {
-            // Idle agent with session — read terminal content once so the
-            // dashboard tile shows something useful instead of just "READY".
-            // Re-read if the preview looks like a stale AppleScript reference.
+          } else if (proc.tty && existing.status === "idle" && !existing.promptType) {
+            // Idle agent — check for trust/sandbox prompts and capture
+            // terminal content. Runs regardless of session file because
+            // the session file may be stale (from state store) while the
+            // terminal is actually sitting at a trust prompt.
+            const prompt = this.detectPrompt(proc.tty);
+            if (prompt) {
+              existing.status = "waiting";
+              existing.promptType = prompt.type;
+              existing.promptMessage = prompt.message;
+              existing.currentAction = prompt.message;
+              existing.terminalPreview = prompt.content.split("\n").filter((l: string) => l.trim()).slice(-15).join("\n").trim().slice(0, 500) || undefined;
+              this.telemetry.notifyExternal(existing);
+              continue;
+            }
+            // No prompt — read terminal preview once for tile content
             const needsPreview = !existing.terminalPreview || existing.terminalPreview.startsWith("tab ");
             if (needsPreview) {
               const preview = this.readTerminalPreview(proc.tty);
@@ -624,13 +645,20 @@ end tell
           const preview = this.readTerminalPreview(proc.tty);
           if (preview) worker.terminalPreview = preview;
         }
-      } else if (proc.tty && sessionFile && processAge < 120_000 && initialStatus === "idle") {
-        // Agent has a session but is young and idle — read terminal content
-        // so the dashboard tile shows something useful instead of just "READY".
-        // This catches manually-opened agents that get a session file before
-        // the first discovery scan.
-        const preview = this.readTerminalPreview(proc.tty);
-        if (preview) worker.terminalPreview = preview;
+      } else if (proc.tty && sessionFile && initialStatus === "idle") {
+        // Has session file but idle — check for trust prompt (session file
+        // may be from state store while terminal shows a prompt).
+        const prompt = this.detectPrompt(proc.tty);
+        if (prompt) {
+          worker.status = "waiting";
+          worker.promptType = prompt.type;
+          worker.promptMessage = prompt.message;
+          worker.currentAction = prompt.message;
+          worker.terminalPreview = prompt.content.split("\n").filter((l: string) => l.trim()).slice(-15).join("\n").trim().slice(0, 500) || undefined;
+        } else {
+          const preview = this.readTerminalPreview(proc.tty);
+          if (preview) worker.terminalPreview = preview;
+        }
       }
     }
 
