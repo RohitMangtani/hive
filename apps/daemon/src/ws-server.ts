@@ -1,7 +1,8 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { URL } from "url";
 import { homedir } from "os";
-import { realpathSync } from "fs";
+import { realpathSync, unlinkSync } from "fs";
+import { join } from "path";
 import type { TelemetryReceiver } from "./telemetry.js";
 import type { ProcessManager } from "./process-mgr.js";
 import type { SessionStreamer } from "./session-stream.js";
@@ -351,6 +352,14 @@ export class WsServer {
 
         // Remove from telemetry immediately (before discovery can re-discover)
         this.telemetry.removeWorker(msg.workerId);
+
+        // Clear the TTY session marker so a new agent on the same TTY
+        // doesn't inherit the old chat history.
+        if (killTty) {
+          const ttyName = killTty.replace("/dev/", "");
+          const markerPath = join(homedir(), ".hive", "sessions", ttyName);
+          try { unlinkSync(markerPath); } catch { /* already gone */ }
+        }
 
         // Close the Terminal.app window/tab after process is dead (no dialog)
         if (killTty) {
