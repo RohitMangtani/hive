@@ -8,12 +8,21 @@ interface QuadrantSlot {
   model: string;
 }
 
-/** Screen quadrant positions: Q1=top-left, Q2=top-right, Q3=bottom-left, Q4=bottom-right */
+/** Screen slot positions: 4-column × 2-row grid supporting up to 8 agents.
+ *  Slots 1-4 = top row (left to right), slots 5-8 = bottom row (left to right).
+ *  x/y are column/row indices used as multipliers against cell dimensions. */
+const MAX_SLOTS = 8;
+const GRID_COLS = 4;
+const GRID_ROWS = 2;
 const QUADRANT_POSITIONS: Record<number, { x: number; y: number }> = {
-  1: { x: 0, y: 0 },    // top-left
-  2: { x: 1, y: 0 },    // top-right
-  3: { x: 0, y: 1 },    // bottom-left
-  4: { x: 1, y: 1 },    // bottom-right
+  1: { x: 0, y: 0 },
+  2: { x: 1, y: 0 },
+  3: { x: 2, y: 0 },
+  4: { x: 3, y: 0 },
+  5: { x: 0, y: 1 },
+  6: { x: 1, y: 1 },
+  7: { x: 2, y: 1 },
+  8: { x: 3, y: 1 },
 };
 
 // Track last arrangement to avoid redundant AppleScript calls
@@ -118,17 +127,18 @@ return "SCREEN:" & midX & "," & midY & linefeed & output
     const result = new Map<string, number>();
     const usedQuadrants = new Set<number>();
 
+    // Determine grid cell dimensions from screen size
+    const cellW = midX * 2 / GRID_COLS;
+    const cellH = midY * 2 / GRID_ROWS;
+
     for (const pos of positions) {
-      const isLeft = pos.cx < midX;
-      const isTop = pos.cy < midY;
-      let q: number;
-      if (isTop && isLeft) q = 1;
-      else if (isTop && !isLeft) q = 2;
-      else if (!isTop && isLeft) q = 3;
-      else q = 4;
+      const col = Math.min(Math.floor(pos.cx / cellW), GRID_COLS - 1);
+      const row = Math.min(Math.floor(pos.cy / cellH), GRID_ROWS - 1);
+      let q = row * GRID_COLS + col + 1; // 1-indexed slot
 
       if (usedQuadrants.has(q)) {
-        const free = [1, 2, 3, 4].filter(n => !usedQuadrants.has(n));
+        const allSlots = Array.from({ length: MAX_SLOTS }, (_, i) => i + 1);
+        const free = allSlots.filter(n => !usedQuadrants.has(n));
         if (free.length === 0) continue;
         q = free[0];
       }
@@ -184,7 +194,7 @@ export function arrangeTerminalWindows(slots: QuadrantSlot[]): void {
     if targetTab is not missing value then
       set custom title of targetTab to "${title}"
       set title displays custom title of targetTab to true
-      set bounds of targetWin to {screenX + ${pos.x} * halfW, screenY + ${pos.y} * halfH + menuBarH, screenX + ${pos.x} * halfW + halfW, screenY + ${pos.y} * halfH + halfH + menuBarH}
+      set bounds of targetWin to {screenX + ${pos.x} * cellW, screenY + ${pos.y} * cellH + menuBarH, screenX + ${pos.x} * cellW + cellW, screenY + ${pos.y} * cellH + cellH + menuBarH}
     end if
     set targetTab to missing value
     set targetWin to missing value`;
@@ -201,8 +211,8 @@ tell application "Finder"
   set screenH to item 4 of screenBounds
 end tell
 set menuBarH to 25
-set halfW to (screenW - screenX) / 2
-set halfH to (screenH - screenY - menuBarH) / 2
+set cellW to (screenW - screenX) / ${GRID_COLS}
+set cellH to (screenH - screenY - menuBarH) / ${GRID_ROWS}
 
 tell application "Terminal"
 ${tabBlocks}
@@ -361,12 +371,12 @@ tell application "Finder"
   set screenH to item 4 of screenBounds
 end tell
 set menuBarH to 25
-set halfW to (screenW - screenX) / 2
-set halfH to (screenH - screenY - menuBarH) / 2
+set cellW to (screenW - screenX) / ${GRID_COLS}
+set cellH to (screenH - screenY - menuBarH) / ${GRID_ROWS}
 ` : "";
 
   const setBoundsLine = pos
-    ? `set bounds of window of newTab to {screenX + ${pos.x} * halfW, screenY + ${pos.y} * halfH + menuBarH, screenX + ${pos.x} * halfW + halfW, screenY + ${pos.y} * halfH + halfH + menuBarH}`
+    ? `set bounds of window of newTab to {screenX + ${pos.x} * cellW, screenY + ${pos.y} * cellH + menuBarH, screenX + ${pos.x} * cellW + cellW, screenY + ${pos.y} * cellH + cellH + menuBarH}`
     : "";
 
   const script = `

@@ -23,7 +23,7 @@ export interface WorkerState {
   suggestions?: Suggestion[];
   /** Which AI tool this worker is running (e.g. "claude", "codex", "openclaw"). Defaults to "claude". */
   model?: string;
-  /** Server-assigned quadrant (1-4). Dashboard should use this for slot ordering. */
+  /** Server-assigned slot (1-8). Dashboard should use this for grid ordering. */
   quadrant?: number;
 }
 
@@ -51,7 +51,7 @@ export interface DaemonMessage {
   content?: string;
   /** Model to spawn: "claude", "codex", or "openclaw". Defaults to "claude". */
   model?: string;
-  /** Target quadrant (1-4) for spawn. If set, places the terminal in this quadrant. */
+  /** Target slot (1-8) for spawn. If set, places the terminal in this slot. */
   targetQuadrant?: number;
   optionIndex?: number;
   /** Phase 4: which suggestion label was applied */

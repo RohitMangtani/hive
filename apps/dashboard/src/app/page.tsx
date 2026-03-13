@@ -9,7 +9,7 @@ import { ReviewDrawer } from "@/components/ReviewDrawer";
 import type { WorkerState } from "@/lib/types";
 
 const DEFAULT_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3002";
-const MAX_SLOTS = 4;
+const MAX_SLOTS = 8;
 
 interface LastKnown {
   project: string;
@@ -314,9 +314,9 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Body — 2x2 grid */}
+      {/* Body — adaptive grid: 2x2 for ≤4 agents, 4x2 for 5-8 */}
       <div
-        className={`min-h-0 grid grid-cols-2 grid-rows-2 gap-3 p-4 sm:p-6 transition-all duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] ${!isViewer && selectedEntry ? "shrink-0" : "flex-1"}`}
+        className={`min-h-0 grid ${numbered.length > 4 ? "grid-cols-4 grid-rows-2" : "grid-cols-2 grid-rows-2"} gap-3 p-4 sm:p-6 transition-all duration-300 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] ${!isViewer && selectedEntry ? "shrink-0" : "flex-1"}`}
         style={!isViewer && selectedEntry ? { flexBasis: chatExpanded ? "0px" : "40%", maxHeight: chatExpanded ? "0px" : "none", overflow: chatExpanded ? "hidden" : "visible", padding: chatExpanded ? "0px" : undefined, gap: chatExpanded ? "0px" : undefined } : undefined}
       >
         {Array.from({ length: MAX_SLOTS }, (_, i) => i + 1).map((slot) => {

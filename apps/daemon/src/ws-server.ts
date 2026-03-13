@@ -230,7 +230,7 @@ export class WsServer {
 
         const model = msg.model || "claude";
         // Use the requested quadrant if provided and available, otherwise first open
-        const requestedQ = typeof msg.targetQuadrant === "number" && msg.targetQuadrant >= 1 && msg.targetQuadrant <= 4
+        const requestedQ = typeof msg.targetQuadrant === "number" && msg.targetQuadrant >= 1 && msg.targetQuadrant <= 8
           ? msg.targetQuadrant
           : undefined;
         const openQ = requestedQ ?? this.telemetry.getFirstOpenQuadrant();

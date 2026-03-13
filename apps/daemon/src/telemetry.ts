@@ -882,7 +882,7 @@ export class TelemetryReceiver {
     const usedSlots = new Set(this.quadrantAssignments.values());
     for (const w of workers) {
       if (this.quadrantAssignments.has(w.id)) continue;
-      for (let slot = 1; slot <= 4; slot++) {
+      for (let slot = 1; slot <= 8; slot++) {
         if (!usedSlots.has(slot)) {
           this.quadrantAssignments.set(w.id, slot);
           usedSlots.add(slot);
@@ -895,7 +895,7 @@ export class TelemetryReceiver {
     // This is the single source of truth — dashboard uses this instead of computing its own.
     for (const w of workers) {
       const q = this.quadrantAssignments.get(w.id);
-      w.quadrant = q; // undefined if >4 workers
+      w.quadrant = q; // undefined if >8 workers
     }
 
     // Use cached contexts — only rebuild when worker state changes.
@@ -928,7 +928,7 @@ export class TelemetryReceiver {
     }> = [];
     for (const w of workers) {
       const q = this.quadrantAssignments.get(w.id);
-      if (!q) continue; // more than 4 workers
+      if (!q) continue; // more than 8 workers
       const context = contextsByWorker.get(w.id);
       slots.push({
         quadrant: q, id: w.id, pid: w.pid, tty: w.tty,
@@ -967,10 +967,10 @@ export class TelemetryReceiver {
     arrangeTerminalWindows(arrangeSlots);
   }
 
-  /** Returns the lowest quadrant (1-4) not currently assigned, or undefined if full. */
+  /** Returns the lowest slot (1-8) not currently assigned, or undefined if full. */
   getFirstOpenQuadrant(): number | undefined {
     const used = new Set(this.quadrantAssignments.values());
-    for (let q = 1; q <= 4; q++) {
+    for (let q = 1; q <= 8; q++) {
       if (!used.has(q)) return q;
     }
     return undefined;
