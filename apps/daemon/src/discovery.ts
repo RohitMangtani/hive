@@ -624,6 +624,11 @@ end tell
             worker.currentAction = placeholder.currentAction;
           } else if (placeholder.terminalPreview && !worker.terminalPreview) {
             worker.terminalPreview = placeholder.terminalPreview;
+          } else {
+            // Freshly spawned agent — start as idle (red) until it receives work.
+            // Prevents false green from stale JSONL or no-pattern fallback.
+            worker.status = "idle";
+            worker.currentAction = null;
           }
           this.telemetry.removeWorker(placeholderId);
         }

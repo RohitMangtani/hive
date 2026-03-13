@@ -852,29 +852,25 @@ export class TelemetryReceiver {
         (positionMap) => {
           if (positionMap.size === 0) return;
 
-          const newAssignments = new Map<string, number>();
-          const usedByPosition = new Set<number>();
+          // Sticky assignments: existing workers keep their slots.
+          // Position detection only assigns slots to NEW workers (those without an assignment).
+          const usedSlots = new Set(this.quadrantAssignments.values());
+          let changed = false;
 
+          // Only assign position-based slots to workers that don't have one yet
           for (const w of workerSnapshot) {
+            if (this.quadrantAssignments.has(w.id)) continue; // already assigned, keep it
             const posQ = positionMap.get(w.tty);
-            if (posQ && !usedByPosition.has(posQ)) {
-              newAssignments.set(w.id, posQ);
-              usedByPosition.add(posQ);
+            if (posQ && !usedSlots.has(posQ)) {
+              this.quadrantAssignments.set(w.id, posQ);
+              usedSlots.add(posQ);
+              changed = true;
             }
           }
 
-          for (const w of allWorkerSnapshot) {
-            if (newAssignments.has(w.id)) continue;
-            const prev = this.quadrantAssignments.get(w.id);
-            if (prev && !usedByPosition.has(prev)) {
-              newAssignments.set(w.id, prev);
-              usedByPosition.add(prev);
-            }
+          if (changed) {
+            this.writeWorkersFile();
           }
-
-          this.quadrantAssignments = newAssignments;
-          // Re-write files immediately with updated assignments
-          this.writeWorkersFile();
         },
       );
     }
