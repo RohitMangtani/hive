@@ -185,7 +185,7 @@ export default function Home() {
   const selectedEntry = selectedId ? numbered.find(({ worker: w }) => w.id === selectedId) : null;
 
   const rawEntries = selectedEntry ? chatEntries.get(selectedEntry.worker.id) : undefined;
-  const memoEntries = useMemo(() => (rawEntries ?? []).slice(-50), [rawEntries]);
+  const memoEntries = useMemo(() => (rawEntries ?? []).slice(-200), [rawEntries]);
 
   useEffect(() => {
     if (selectedId && !selectedEntry) {

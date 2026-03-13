@@ -3,7 +3,7 @@ import { basename, join } from "path";
 import type { ChatEntry } from "./types.js";
 import { describeAction, describeBashCommand, truncate } from "./utils.js";
 
-const MAX_HISTORY = 50;
+const MAX_HISTORY = 200;
 const POLL_INTERVAL = 500; // fallback poll if fs.watch misses events
 const NUDGE_INTERVALS = [200, 500, 1_000, 2_000, 4_000]; // rapid polls after message send
 
