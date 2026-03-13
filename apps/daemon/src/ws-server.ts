@@ -273,8 +273,20 @@ export class WsServer {
           this.send(ws, { type: "error", error: "Missing workerId" });
           return;
         }
+        // Try ProcessManager first (for managed/spawned workers)
         this.procMgr.kill(msg.workerId);
-        console.log(`Killed worker ${msg.workerId}`);
+        // Also kill discovered workers by PID (ProcessManager doesn't track these)
+        const killWorker = this.telemetry.get(msg.workerId);
+        if (killWorker?.pid) {
+          try {
+            process.kill(killWorker.pid, "SIGTERM");
+            setTimeout(() => {
+              try { process.kill(killWorker.pid, "SIGKILL"); } catch { /* already gone */ }
+            }, 3000);
+          } catch { /* already gone */ }
+          this.telemetry.removeWorker(msg.workerId);
+        }
+        console.log(`Killed worker ${msg.workerId} (pid=${killWorker?.pid})`);
         break;
       }
 
