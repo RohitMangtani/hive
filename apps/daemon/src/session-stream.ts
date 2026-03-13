@@ -17,13 +17,31 @@ interface Subscription {
   nudgeTimers: ReturnType<typeof setTimeout>[];
 }
 
+interface PendingSub {
+  subKey: string;
+  workerId: string;
+  callback: (entries: ChatEntry[], full?: boolean) => void;
+}
+
 export class SessionStreamer {
   private subscriptions = new Map<string, Subscription>();
   // worker_id → session file path (set by discovery)
   private sessionFiles = new Map<string, string>();
+  // Subscribers waiting for a session file to be mapped
+  private pendingSubs: PendingSub[] = [];
 
   setSessionFile(workerId: string, filePath: string): void {
     this.sessionFiles.set(workerId, filePath);
+
+    // Activate any pending subscriptions waiting for this worker's session file
+    const pending = this.pendingSubs.filter(p => p.workerId === workerId);
+    this.pendingSubs = this.pendingSubs.filter(p => p.workerId !== workerId);
+    for (const p of pending) {
+      // Send full history then start live subscription
+      const history = this.readHistory(workerId);
+      if (history.length > 0) p.callback(history, true);
+      this.startSubscription(p.subKey, workerId, filePath, p.callback);
+    }
   }
 
   getSessionFile(workerId: string): string | null {
@@ -143,8 +161,17 @@ export class SessionStreamer {
     this.unsubscribe(subKey);
 
     const filePath = this.sessionFiles.get(workerId);
-    if (!filePath) return;
+    if (!filePath) {
+      // Session file not mapped yet (agent just spawned) — queue for later
+      this.pendingSubs = this.pendingSubs.filter(p => p.subKey !== subKey);
+      this.pendingSubs.push({ subKey, workerId, callback });
+      return;
+    }
 
+    this.startSubscription(subKey, workerId, filePath, callback);
+  }
+
+  private startSubscription(subKey: string, workerId: string, filePath: string, callback: (entries: ChatEntry[], full?: boolean) => void): void {
     // Start from current end of file
     let byteOffset: number;
     try {
@@ -174,14 +201,15 @@ export class SessionStreamer {
     this.subscriptions.set(subKey, sub);
   }
 
-  unsubscribe(workerId: string): void {
-    const sub = this.subscriptions.get(workerId);
+  unsubscribe(subKey: string): void {
+    const sub = this.subscriptions.get(subKey);
     if (sub) {
       clearInterval(sub.timer);
       for (const t of sub.nudgeTimers) clearTimeout(t);
       if (sub.watcher) sub.watcher.close();
-      this.subscriptions.delete(workerId);
+      this.subscriptions.delete(subKey);
     }
+    this.pendingSubs = this.pendingSubs.filter(p => p.subKey !== subKey);
   }
 
   /**
