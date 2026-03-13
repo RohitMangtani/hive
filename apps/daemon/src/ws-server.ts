@@ -279,7 +279,7 @@ export class WsServer {
             managed: false,
             tty: spawnTty,
             model,
-            terminalPreview: `Starting ${model}...`,
+            terminalPreview: undefined,
           };
           this.telemetry.registerDiscovered(placeholderId, placeholder);
 
@@ -297,26 +297,16 @@ export class WsServer {
               return;
             }
 
-            // Read terminal content and update the placeholder
+            // Check for trust/sandbox prompts only (no raw terminal noise)
             if (this.discovery) {
-              const content = this.discovery.readTerminalContent(spawnTty);
-              if (content) {
-                const lines = content.split("\n").filter((l: string) => l.trim());
-                const preview = lines.slice(-15).join("\n").trim().slice(0, 500);
-                if (preview) {
-                  current.terminalPreview = preview;
-
-                  // Also check for prompts
-                  const prompt = this.discovery.detectPrompt(spawnTty);
-                  if (prompt) {
-                    current.status = "waiting";
-                    current.promptType = prompt.type;
-                    current.promptMessage = prompt.message;
-                    current.currentAction = prompt.message;
-                  }
-
-                  this.telemetry.notifyExternal(current);
-                }
+              const prompt = this.discovery.detectPrompt(spawnTty);
+              if (prompt) {
+                current.status = "waiting";
+                current.promptType = prompt.type;
+                current.promptMessage = prompt.message;
+                current.currentAction = prompt.message;
+                current.terminalPreview = prompt.content.split("\n").filter((l: string) => l.trim()).slice(-15).join("\n").trim().slice(0, 500) || undefined;
+                this.telemetry.notifyExternal(current);
               }
             }
 

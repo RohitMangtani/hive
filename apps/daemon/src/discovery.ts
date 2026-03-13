@@ -459,13 +459,7 @@ end tell
               this.telemetry.notifyExternal(existing);
               continue;
             }
-            // No known prompt — show raw terminal content so user sees what's happening
-            const preview = this.readTerminalPreview(proc.tty);
-            if (preview) {
-              existing.terminalPreview = preview;
-              existing.status = "waiting";
-              existing.currentAction = "Waiting for input...";
-            }
+            // No known prompt — leave tile clean (no raw terminal noise)
           } else if (proc.tty && existing.status === "idle" && !existing.promptType && Date.now() - proc.startedAt < 600_000) {
             // Young idle agent (<3min) — check for trust/sandbox prompts.
             // Only young agents need this; older agents have prompt text in
@@ -639,10 +633,6 @@ end tell
           worker.promptMessage = prompt.message;
           worker.currentAction = prompt.message;
           worker.terminalPreview = prompt.content.split("\n").filter((l: string) => l.trim()).slice(-15).join("\n").trim().slice(0, 500) || undefined;
-        } else {
-          // No known prompt but no session either — show raw terminal content
-          const preview = this.readTerminalPreview(proc.tty);
-          if (preview) worker.terminalPreview = preview;
         }
       } else if (proc.tty && sessionFile && initialStatus === "idle" && processAge < 180_000) {
         // Young idle agent with session — check for trust prompt (session
