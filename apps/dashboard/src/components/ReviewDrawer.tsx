@@ -63,6 +63,7 @@ function SwipeableItem({
   const swiping = useRef(false);
   const [offset, setOffset] = useState(0);
   const [dismissed, setDismissed] = useState(false);
+  const [showArtifacts, setShowArtifacts] = useState(false);
 
   const THRESHOLD = 100; // px to trigger dismiss
 
@@ -134,12 +135,26 @@ function SwipeableItem({
         {/* Content */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-[10px] font-semibold text-[var(--text-light)] uppercase tracking-wider">
-              {review.quadrant ? `Q${review.quadrant}` : review.projectName}
-            </span>
+            {review.quadrant ? (
+              <span
+                className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
+                style={{ background: "rgba(59, 130, 246, 0.12)", color: "var(--accent)" }}
+              >
+                Q{review.quadrant}
+              </span>
+            ) : (
+              <span className="text-[10px] font-semibold text-[var(--text-light)] uppercase tracking-wider">
+                {review.projectName}
+              </span>
+            )}
             <span className="text-[10px] text-[var(--text-muted)]">
               {typeLabel(review.type)}
             </span>
+            {review.quadrant && (
+              <span className="text-[10px] text-[var(--text-muted)]">
+                {review.projectName}
+              </span>
+            )}
             <span className="text-[10px] text-[var(--text-muted)] ml-auto shrink-0">
               {formatTime(review.createdAt)}
             </span>
@@ -148,6 +163,29 @@ function SwipeableItem({
           <p className="text-xs text-[var(--text)] leading-relaxed">
             {review.summary}
           </p>
+
+          {/* Artifacts (expandable) */}
+          {review.artifacts && review.artifacts.length > 0 && (
+            <div className="mt-1">
+              <button
+                type="button"
+                onClick={() => setShowArtifacts(!showArtifacts)}
+                className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-light)] transition-colors cursor-pointer"
+              >
+                {showArtifacts ? "\u25BE" : "\u25B8"} {review.artifacts.length} file{review.artifacts.length !== 1 ? "s" : ""}
+              </button>
+              {showArtifacts && (
+                <div className="mt-1 pl-2 border-l border-[var(--border)]">
+                  {review.artifacts.map((art, i) => (
+                    <div key={i} className="text-[10px] text-[var(--text-muted)] leading-relaxed">
+                      <span className="text-[var(--text-light)]">{art.path}</span>
+                      <span className="ml-1 opacity-60">({art.action})</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Action row */}
           <div className="flex items-center gap-2 mt-1.5">

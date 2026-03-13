@@ -17,6 +17,8 @@ export interface ReviewItem {
   projectName: string;
   createdAt: number;
   seen: boolean;
+  /** Recent file changes by this worker at review time */
+  artifacts?: Array<{ path: string; action: string }>;
 }
 
 export class ReviewStore {
@@ -52,7 +54,7 @@ export class ReviewStore {
     summary: string,
     workerId: string,
     projectName: string,
-    opts?: { url?: string; type?: ReviewItem["type"]; quadrant?: number },
+    opts?: { url?: string; type?: ReviewItem["type"]; quadrant?: number; artifacts?: Array<{ path: string; action: string }> },
   ): ReviewItem {
     const item: ReviewItem = {
       id: randomBytes(8).toString("hex"),
@@ -64,6 +66,7 @@ export class ReviewStore {
       projectName,
       createdAt: Date.now(),
       seen: false,
+      artifacts: opts?.artifacts,
     };
     this.items.set(item.id, item);
 

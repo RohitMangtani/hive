@@ -86,6 +86,8 @@ export interface ReviewItem {
   projectName: string;
   createdAt: number;
   seen: boolean;
+  /** Recent file changes by this worker at review time */
+  artifacts?: Array<{ path: string; action: string }>;
 }
 
 export interface DaemonResponse {

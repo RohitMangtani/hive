@@ -3,39 +3,46 @@
 One screen for all your AI agents. Find My iPhone, but for terminal agents. macOS only.
 
 ```
-  Your terminals                     Your phone
-┌───────────┬───────────┐       ┌─────────────────┐
-│  Agent 1  │  Agent 2  │       │ ● Q1    ● Q2    │
-│  (Q1)     │  (Q2)     │  ───► │ green   red     │
-├───────────┼───────────┤       │ ● Q3    ● Q4    │
-│  Agent 3  │  Agent 4  │       │ yellow  green    │
-│  (Q3)     │  (Q4)     │       └─────────────────┘
+  Your terminals (4 agents)              Your phone
+┌───────────┬───────────┐          ┌─────────────────┐
+│  Agent 1  │  Agent 2  │          │ ● Q1    ● Q2    │
+│  (Q1)     │  (Q2)     │   ───►   │ green   red     │
+├───────────┼───────────┤          │ ● Q3    ● Q4    │
+│  Agent 3  │  Agent 4  │          │ yellow  green    │
+│  (Q3)     │  (Q4)     │          └─────────────────┘
 └───────────┴───────────┘
+
+  Your terminals (8 agents)              Your phone
+┌──────┬──────┬──────┬──────┐    ┌───────────────────────┐
+│  Q1  │  Q2  │  Q3  │  Q4  │    │ ● Q1  ● Q2  ● Q3  ● Q4 │
+├──────┼──────┼──────┼──────┤ ►  │ ● Q5  ● Q6  ● Q7  ● Q8 │
+│  Q5  │  Q6  │  Q7  │  Q8  │    └───────────────────────┘
+└──────┴──────┴──────┴──────┘
 ```
 
 The dashboard maps 1:1 to your terminal layout. Top-left terminal is top-left tile. Bottom-right terminal is bottom-right tile. Green means working. Red means done. Yellow means stuck. You look at your phone and know exactly which terminal needs attention without reading a single line of output.
 
-The daemon reads the physical position of each Terminal window on your screen and assigns quadrants to match. Move a terminal to the top-right corner, it becomes Q2 on the dashboard. The spatial mapping stays consistent because it tracks where your windows actually are, not what order you opened them. Q1 is always top-left. The agent in the top-left terminal is always the top-left tile on your phone.
+The daemon reads the physical position of each Terminal window on your screen and assigns slots to match. Move a terminal to the top-right corner, it becomes Q2 on the dashboard. The spatial mapping stays consistent because it tracks where your windows actually are, not what order you opened them. The grid adapts: 2x2 for up to 4 agents, 3x2 for 5-6, 4x2 for 7-8.
 
-You can run 1, 2, 3, or 4 agents. Empty slots show "OFFLINE" on the dashboard. Run two agents side by side and the other two tiles stay greyed out until you need them.
+You can run anywhere from 1 to 8 agents. Empty slots show "OFFLINE" on the dashboard. Start with two agents and scale up as your workflow demands.
 
-One person. Four agents. The output of a small team.
+One person. Up to eight agents. The output of a team.
 
 ## Why This Helps
 
-Running one AI agent is manageable. Running four at once on different tasks is where things break down. You lose track of which one finished, which one is stuck, and which one drifted from what you asked. You end up alt-tabbing between terminals, re-reading output, and spending more energy tracking status than directing work.
+Running one AI agent is manageable. Running several at once on different tasks is where things break down. You lose track of which one finished, which one is stuck, and which one drifted from what you asked. You end up alt-tabbing between terminals, re-reading output, and spending more energy tracking status than directing work.
 
-The quadrant layout solves this. Your brain is good at spatial memory. When you arrange four terminals in a grid and the dashboard mirrors that grid, you stop thinking in terminal names and start thinking in positions. "Top-left is building the API, bottom-right is writing tests." You glance at four colored dots and know the state of everything in under a second.
+The spatial layout solves this. Your brain is good at spatial memory. When you arrange terminals in a grid and the dashboard mirrors that grid, you stop thinking in terminal names and start thinking in positions. "Top-left is building the API, bottom-right is writing tests." You glance at colored dots and know the state of everything in under a second.
 
-**You catch problems by looking, not reading.** Four green dots means everything is fine. One yellow dot and your eye goes straight to it. You do not read logs. You do not scroll. Color is faster than text because your brain processes it before you consciously look. The spatial layout tells you which terminal to switch to without thinking.
+**You catch problems by looking, not reading.** All green dots means everything is fine. One yellow dot and your eye goes straight to it. You do not read logs. You do not scroll. Color is faster than text because your brain processes it before you consciously look. The spatial layout tells you which terminal to switch to without thinking.
 
-**You can walk away.** Start four agents, close your laptop, go to lunch. Come back and the dashboard shows you exactly what happened. Green tiles kept working. Yellow tiles are waiting for you. Red tiles finished. You pick up where things paused without re-reading anything.
+**You can walk away.** Start your agents, close your laptop, go to lunch. Come back and the dashboard shows you exactly what happened. Green tiles kept working. Yellow tiles are waiting for you. Red tiles finished. You pick up where things paused without re-reading anything.
 
-**Put it on any screen.** Prop up a tablet next to your laptop and leave the dashboard open. Set it on a second monitor. The four colored dots sit there updating in real time while you do other things. When a dot turns yellow, you notice it in your peripheral vision without switching windows or checking anything. It is a status board for your AI fleet, the same way a wall monitor in an ops center shows system health at a glance.
+**Put it on any screen.** Prop up a tablet next to your laptop and leave the dashboard open. Set it on a second monitor. The colored dots sit there updating in real time while you do other things. When a dot turns yellow, you notice it in your peripheral vision without switching windows or checking anything. It is a status board for your AI fleet, the same way a wall monitor in an ops center shows system health at a glance.
 
 **Flag agents for later.** Each tile has a small circle in the corner. Tap it and the tile turns orange. That agent is flagged. Use it to mark which agent you want to come back to, which one has something interesting you have not reviewed yet, or which one you want to give a new task when you are ready. Tap again to unflag. It is a bookmark for your attention.
 
-**Talk to agents from your phone.** Tap any tile, type a message, it goes straight to that agent's terminal. Direct all four agents from the couch. The 2x2 grid on your phone matches the 2x2 grid on your screen, so you always know which agent you are talking to.
+**Talk to agents from your phone.** Tap any tile, type a message, it goes straight to that agent's terminal. Direct all your agents from the couch. The grid on your phone matches your screen layout, so you always know which agent you are talking to.
 
 **Agents coordinate without you bridging every message.** File locks prevent two agents from editing the same file. Task queue auto-dispatches work to idle agents. Scratchpad lets agents leave notes for each other. Workflow handoff passes context from one step to the next automatically. You handle direction. They handle implementation.
 
@@ -45,7 +52,7 @@ The quadrant layout solves this. Your brain is good at spatial memory. When you 
 
 ## What You Get
 
-- **Stoplight dashboard** — 2x2 grid that mirrors your terminal layout. Green/red/yellow at a glance. Open on your phone, tablet, or second monitor. The tile positions match your terminal positions.
+- **Stoplight dashboard** — adaptive grid (2x2 up to 4x2) that mirrors your terminal layout. Green/red/yellow at a glance. Open on your phone, tablet, or second monitor. The tile positions match your terminal positions. Supports 1-8 agents.
 - **Multi-model** — run Claude, Codex, and OpenClaw agents side by side. Each tile shows which model is running. Spawn any from the dashboard.
 - **Auto-discovery** — start `claude`, `codex`, or `openclaw tui` in any terminal and it appears on the dashboard within 3 seconds. Quadrants are assigned by where the terminal sits on your screen, not by start order. No registration, no config.
 - **Auto-pilot** — permission prompts auto-approve after a 15-second grace window. Agents never sit idle waiting for a click.
@@ -80,7 +87,7 @@ npm run launch
 
 `npm run launch` is the standard path. It starts the local daemon, opens a Cloudflare quick tunnel for the WebSocket server, deploys or updates your own free Vercel dashboard, opens that hosted URL, and leaves the local daemon and tunnel running in one terminal.
 
-Then open 1-4 `Terminal.app` windows and run whichever supported CLI you installed:
+Then open `Terminal.app` windows (up to 8) and run whichever supported CLI you installed:
 
 ```bash
 claude
@@ -174,7 +181,7 @@ or
 openclaw tui
 ```
 
-Arrange your terminal windows in a 2x2 grid on screen. The daemon detects their positions and maps each one to the matching tile on the dashboard. Mix `claude`, `codex`, and `openclaw` however you want. You can also spawn agents directly from the dashboard by tapping an empty "OFFLINE" tile.
+Arrange your terminal windows on screen. The daemon detects their positions and maps each one to the matching tile on the dashboard. The grid adapts: 2x2 for up to 4, 3x2 for 5-6, 4x2 for 7-8. Mix `claude`, `codex`, and `openclaw` however you want. You can also spawn agents directly from the dashboard by tapping an empty "OFFLINE" tile.
 
 **4. Install the app on your phone** (optional, recommended)
 
@@ -191,7 +198,7 @@ Open the dashboard URL on your phone and add it to your home screen. It runs ful
 ## How It Works
 
 ### Auto-Discovery
-Detects Claude, Codex, and OpenClaw processes within 3 seconds via `ps` + `lsof`. No configuration needed. Start `claude`, `codex`, or `openclaw tui` in any terminal and the daemon finds it. The daemon reads the physical position of each Terminal window on your screen every 10 seconds and assigns quadrants to match. If you drag a terminal from top-left to bottom-right, it becomes Q4 on the dashboard within 10 seconds. Tab titles update automatically to show which quadrant each terminal is.
+Detects Claude, Codex, and OpenClaw processes within 3 seconds via `ps` + `lsof`. No configuration needed. Start `claude`, `codex`, or `openclaw tui` in any terminal and the daemon finds it. Supports up to 8 agents simultaneously. The daemon reads the physical position of each Terminal window on your screen every 10 seconds and assigns slots to match. If you drag a terminal from top-left to bottom-right, it becomes the bottom-right tile on the dashboard within 10 seconds. Tab titles update automatically to show which slot each terminal is.
 
 ### Status Tracking
 Multi-layer detection pipeline determines real-time status:
@@ -203,7 +210,7 @@ Multi-layer detection pipeline determines real-time status:
 ### Auto-Pilot
 Auto-approves permission prompts so agents never sit idle waiting for you. The daemon detects when an agent is stuck on a prompt, waits a 15-second grace window (so you can override from the dashboard), then sends a Return keystroke via the `send-return` binary.
 
-This is how you run 4 agents unattended. You give them tasks and walk away. Auto-pilot keeps them moving.
+This is how you run agents unattended. You give them tasks and walk away. Auto-pilot keeps them moving.
 
 ### Coordination
 Multiple agents can safely work on the same codebase:
@@ -418,7 +425,7 @@ Daemon (Node.js, port 3001 + 3002)
 └── WebSocket     — pushes live state to dashboard every 3 seconds
 
 Dashboard (Next.js, port 3000 — installable as PWA)
-├── 2×2 grid      — stoplight status cards matching terminal layout
+├── Adaptive grid — stoplight status cards matching terminal layout (2x2 to 4x2)
 ├── Live chat     — stream each agent's conversation history
 ├── Review queue  — slide-out drawer of recent pushes, deploys, and PRs
 ├── Controls      — send messages, spawn agents, view queue
@@ -540,7 +547,7 @@ The project uses npm workspaces with Turbo for build orchestration. The daemon a
 
 ## How This Was Built
 
-This was built using the agents it manages. Four AI agents, a mix of Claude Code and Codex, iterated on the daemon and dashboard simultaneously while a human directed architecture and resolved conflicts. The compound learning system was tested in production from day one, with each session's lessons feeding the next.
+This was built using the agents it manages. Multiple AI agents, a mix of Claude Code and Codex, iterated on the daemon and dashboard simultaneously while a human directed architecture and resolved conflicts. The compound learning system was tested in production from day one, with each session's lessons feeding the next.
 
 ## License
 

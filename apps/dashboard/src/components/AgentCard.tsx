@@ -317,7 +317,9 @@ export function AgentCard({
             </div>
           )}
           {!hasPrompt && worker.terminalPreview && idle && (
-            <p className="text-[10px] text-[var(--text-muted)] mt-1">Ready — click to send a message</p>
+            <p className="text-[10px] text-[var(--text-muted)] mt-1">
+              {worker.currentAction?.includes("not installed") ? "" : "Ready — click to send a message"}
+            </p>
           )}
           {!hasPrompt && worker.terminalPreview && !idle && (
             <p className="text-[10px] text-[var(--text-muted)] mt-1">Waiting for session to start...</p>

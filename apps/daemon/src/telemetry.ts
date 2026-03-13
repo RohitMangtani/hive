@@ -1577,7 +1577,7 @@ export class TelemetryReceiver {
     summary: string,
     workerId: string,
     projectName: string,
-    opts?: { url?: string; type?: ReviewItem["type"]; quadrant?: number },
+    opts?: { url?: string; type?: ReviewItem["type"]; quadrant?: number; artifacts?: Array<{ path: string; action: string }> },
   ): ReviewItem {
     const quadrant = opts?.quadrant ?? this.quadrantAssignments.get(workerId);
     const review = this.reviewStore.add(summary, workerId, projectName, { ...opts, quadrant });
@@ -1616,6 +1616,20 @@ export class TelemetryReceiver {
     this.reviewListeners.push(listener);
   }
 
+  /** Resolve current git branch from a worker's project path */
+  private resolveGitBranch(worker: WorkerState): string | undefined {
+    try {
+      const { execFileSync } = require("child_process");
+      return execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
+        cwd: worker.project,
+        encoding: "utf-8",
+        timeout: 3000,
+      }).trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Resolve GitHub URL from a worker's project path */
   private resolveGitUrl(worker: WorkerState): string | undefined {
     try {
@@ -1638,6 +1652,24 @@ export class TelemetryReceiver {
     }
   }
 
+  /** Build a rich review summary with quadrant, project, and branch context */
+  private buildReviewSummary(action: string, worker: WorkerState, branch?: string): string {
+    const q = this.quadrantAssignments.get(worker.id);
+    const qLabel = q ? `Q${q}` : (worker.tty || "agent");
+    const branchSuffix = branch ? ` (${branch})` : "";
+    return `${qLabel} ${action} ${worker.projectName}${branchSuffix}`;
+  }
+
+  /** Get recent artifacts formatted for review attachment */
+  private getReviewArtifacts(workerId: string): Array<{ path: string; action: string }> | undefined {
+    const arts = this.getRecentArtifacts(workerId, 5);
+    if (arts.length === 0) return undefined;
+    return arts.map(a => ({
+      path: a.path.split("/").slice(-2).join("/"),
+      action: a.action,
+    }));
+  }
+
   /** Auto-detect reviewable actions from Bash tool_input */
   private autoDetectReview(
     workerId: string,
@@ -1650,51 +1682,55 @@ export class TelemetryReceiver {
     const cmdLower = command.toLowerCase();
 
     const gitUrl = this.resolveGitUrl(worker);
+    const branch = this.resolveGitBranch(worker);
+    const artifacts = this.getReviewArtifacts(workerId);
 
     // git push
     if (/\bgit\s+push\b/.test(cmdLower)) {
+      const summary = this.buildReviewSummary("pushed", worker, branch);
       console.log(`[review] Auto-detected push by ${worker.tty || workerId} in ${worker.projectName}`);
       this.addReview(
-        `Pushed changes to ${worker.projectName}`,
+        summary,
         workerId,
         worker.projectName,
-        { type: "push", url: gitUrl },
+        { type: "push", url: gitUrl, artifacts },
       );
       return;
     }
 
     // gh pr create
     if (/\bgh\s+pr\s+create\b/.test(cmdLower)) {
+      const summary = this.buildReviewSummary("created PR in", worker, branch);
       console.log(`[review] Auto-detected PR by ${worker.tty || workerId} in ${worker.projectName}`);
-      // PR URL will be self-reported by agent via POST /api/reviews with exact URL
-      // Auto-detected entry links to repo for now
       this.addReview(
-        `Created PR in ${worker.projectName}`,
+        summary,
         workerId,
         worker.projectName,
-        { type: "pr", url: gitUrl ? `${gitUrl}/pulls` : undefined },
+        { type: "pr", url: gitUrl ? `${gitUrl}/pulls` : undefined, artifacts },
       );
       return;
     }
 
     // vercel deploy (or npx vercel)
     if (/\bvercel\b/.test(cmdLower) && (/\bdeploy\b/.test(cmdLower) || /\bnpx\s+vercel\b/.test(cmdLower) || /^vercel(\s|$)/.test(cmdLower.trim()))) {
+      const summary = this.buildReviewSummary("deployed", worker, branch);
       this.addReview(
-        `Deployed ${worker.projectName}`,
+        summary,
         workerId,
         worker.projectName,
-        { type: "deploy" },
+        { type: "deploy", artifacts },
       );
       return;
     }
 
     // npm run build + git push in same command chain
     if (/\bgit\s+commit\b/.test(cmdLower) && /\bgit\s+push\b/.test(cmdLower)) {
+      const summary = this.buildReviewSummary("committed and pushed", worker, branch);
       this.addReview(
-        `Committed and pushed ${worker.projectName}`,
+        summary,
         workerId,
         worker.projectName,
-        { type: "push", url: gitUrl },
+        { type: "push", url: gitUrl, artifacts },
       );
       return;
     }

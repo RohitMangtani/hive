@@ -287,6 +287,50 @@ export class SessionStreamer {
   }
 }
 
+/** Regex to detect hive routing messages */
+const HIVE_ROUTING_RE = /^Read \/Users\/\w+\/\.hive\/context-messages\/(msg-[\w-]+\.md) and follow it exactly\./;
+
+/** Extract real user message from a hive context-message file */
+function resolveRoutedMessage(text: string): string | null {
+  const match = text.match(HIVE_ROUTING_RE);
+  if (!match) return null;
+  try {
+    const homeDir = process.env.HOME || `/Users/${process.env.USER}`;
+    const filePath = join(homeDir, ".hive", "context-messages", match[1]);
+    const content = readFileSync(filePath, "utf-8");
+    const lines = content.split("\n");
+    // Skip header: "# Hive Routed Message", Target, Model, Created lines
+    let startIdx = 0;
+    for (let i = 0; i < lines.length && i < 6; i++) {
+      if (lines[i].startsWith("# Hive Routed Message") ||
+          lines[i].startsWith("Target:") ||
+          lines[i].startsWith("Model:") ||
+          lines[i].startsWith("Created:")) {
+        startIdx = i + 1;
+      }
+    }
+    return lines.slice(startIdx).join("\n").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Clean system tags from user messages so only human-written content remains */
+function cleanUserMessage(text: string): string | null {
+  let cleaned = text;
+  // Strip system-reminder blocks
+  cleaned = cleaned.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "");
+  // Strip local-command-caveat blocks
+  cleaned = cleaned.replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, "");
+  // Strip command tags (slash commands shown in terminal)
+  cleaned = cleaned.replace(/<command-name>[\s\S]*?<\/command-name>/g, "");
+  cleaned = cleaned.replace(/<command-message>[\s\S]*?<\/command-message>/g, "");
+  cleaned = cleaned.replace(/<command-args>[\s\S]*?<\/command-args>/g, "");
+  cleaned = cleaned.replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, "");
+  cleaned = cleaned.trim();
+  return cleaned || null;
+}
+
 /** Parse a single JSONL line into chat entries (Claude or Codex format) */
 function parseLine(line: string): ChatEntry[] | null {
   try {
@@ -295,8 +339,17 @@ function parseLine(line: string): ChatEntry[] | null {
 
     // ── Claude format ──
     if (type === "user") {
-      const text = extractText(obj.message?.content);
+      let text = extractText(obj.message?.content);
+      if (!text) return null;
+
+      // Resolve hive routing messages to their real content
+      const routed = resolveRoutedMessage(text);
+      if (routed !== null) text = routed;
+
+      // Clean system tags from user messages
+      text = cleanUserMessage(text);
       if (text) return [{ role: "user", text }];
+      return null;
     }
 
     if (type === "assistant") {
