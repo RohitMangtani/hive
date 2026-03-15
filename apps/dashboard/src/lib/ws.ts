@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentModel, ChatEntry, DaemonMessage, DaemonResponse, ReviewItem, WorkerState } from "@/lib/types";
 
 /** Extended response type until shared types package adds "models" */
-type ExtendedResponse = DaemonResponse | { type: "models"; models?: AgentModel[] };
+type ExtendedResponse = DaemonResponse | { type: "models"; models?: AgentModel[] } | { type: "vapid_key"; vapidKey?: string } | { type: "push_status"; subscribed?: boolean };
 
 const MAX_CHAT_ENTRIES = 200;
 
@@ -22,6 +22,7 @@ export function useHive(daemonUrl: string) {
     { id: "codex", label: "Codex" },
     { id: "openclaw", label: "OpenClaw" },
   ]);
+  const [vapidKey, setVapidKey] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -243,6 +244,14 @@ export function useHive(daemonUrl: string) {
             break;
           }
 
+          case "vapid_key": {
+            if (data.vapidKey) setVapidKey(data.vapidKey);
+            break;
+          }
+
+          case "push_status":
+            break;
+
           case "orchestrator":
           case "error":
             break;
@@ -349,6 +358,6 @@ export function useHive(daemonUrl: string) {
 
   return {
     connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect,
-    reviews, markReviewSeen, dismissReview, markAllReviewsSeen, clearAllReviews, models,
+    reviews, markReviewSeen, dismissReview, markAllReviewsSeen, clearAllReviews, models, vapidKey,
   };
 }

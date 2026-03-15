@@ -50,7 +50,7 @@ export interface TelemetryEvent {
 }
 
 export interface DaemonMessage {
-  type: "spawn" | "kill" | "message" | "selection" | "list" | "orchestrator" | "subscribe" | "unsubscribe" | "suggestion_feedback" | "review_seen" | "review_dismiss" | "review_seen_all" | "review_clear_all" | "approve_prompt";
+  type: "spawn" | "kill" | "message" | "selection" | "list" | "orchestrator" | "subscribe" | "unsubscribe" | "suggestion_feedback" | "review_seen" | "review_dismiss" | "review_seen_all" | "review_clear_all" | "approve_prompt" | "push_subscribe" | "push_unsubscribe";
   workerId?: string;
   project?: string;
   task?: string;
@@ -66,6 +66,13 @@ export interface DaemonMessage {
   shownLabels?: string[];
   /** Review ID for review mutations */
   reviewId?: string;
+  /** Web Push subscription object from browser */
+  subscription?: {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+  };
+  /** Label for the push subscription (e.g. "iPhone", "iPad") */
+  pushLabel?: string;
 }
 
 export interface ChatEntry {
@@ -91,7 +98,7 @@ export interface ReviewItem {
 }
 
 export interface DaemonResponse {
-  type: "workers" | "worker_update" | "chat" | "chat_history" | "orchestrator" | "error" | "queued" | "auth" | "reviews" | "review_added";
+  type: "workers" | "worker_update" | "chat" | "chat_history" | "orchestrator" | "error" | "queued" | "auth" | "reviews" | "review_added" | "vapid_key" | "push_status";
   workers?: WorkerState[];
   worker?: WorkerState;
   workerId?: string;
@@ -103,4 +110,8 @@ export interface DaemonResponse {
   admin?: boolean;
   reviews?: ReviewItem[];
   review?: ReviewItem;
+  /** VAPID public key for Web Push subscription */
+  vapidKey?: string;
+  /** Whether push is subscribed on this connection */
+  subscribed?: boolean;
 }

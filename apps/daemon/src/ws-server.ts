@@ -11,6 +11,7 @@ import { spawnTerminalWindow, closeTerminalWindow } from "./arrange-windows.js";
 import { validateToken } from "./auth.js";
 import { ProcessDiscovery } from "./discovery.js";
 import type { DaemonMessage, DaemonResponse } from "./types.js";
+import type { WebPushManager } from "./web-push.js";
 
 export class WsServer {
   private wss: WebSocketServer | null = null;
@@ -27,6 +28,7 @@ export class WsServer {
   private clientSubs = new Map<WebSocket, string>();
   private lastWorkersSnapshot: string | null = null;
   private lastModelsSnapshot: string | null = null;
+  private pushMgr: WebPushManager | null = null;
 
   constructor(
     telemetry: TelemetryReceiver,
@@ -95,6 +97,11 @@ export class WsServer {
     this.discovery = discovery;
   }
 
+  /** Set the WebPushManager (for push subscription handling) */
+  setPushManager(mgr: WebPushManager): void {
+    this.pushMgr = mgr;
+  }
+
   /** Push full worker list to all clients. Call from the main tick loop
    *  so the dashboard stays current even when status changes come from
    *  discovery (JSONL/CPU analysis) instead of hooks. */
@@ -144,6 +151,10 @@ export class WsServer {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "models", models: this.getAvailableModels() }));
       }
+      // Send VAPID public key for Web Push subscription
+      if (this.pushMgr) {
+        this.send(ws, { type: "vapid_key", vapidKey: this.pushMgr.getPublicKey() });
+      }
 
       ws.on("message", (raw) => {
         let msg: DaemonMessage;
@@ -182,8 +193,8 @@ export class WsServer {
   }
 
   private handleMessage(ws: WebSocket, msg: DaemonMessage): void {
-    // Read-only viewers can only request the worker list
-    if (this.readOnlyClients.has(ws) && msg.type !== "list") {
+    // Read-only viewers can only request the worker list or manage push subscriptions
+    if (this.readOnlyClients.has(ws) && msg.type !== "list" && msg.type !== "push_subscribe" && msg.type !== "push_unsubscribe") {
       this.send(ws, { type: "error", error: "Read-only access" });
       return;
     }
@@ -577,6 +588,28 @@ export class WsServer {
           type: "orchestrator",
           content: "Orchestrator not yet implemented",
         });
+        break;
+      }
+
+      case "push_subscribe": {
+        if (!this.pushMgr) {
+          this.send(ws, { type: "error", error: "Push not available" });
+          return;
+        }
+        if (!msg.subscription?.endpoint || !msg.subscription?.keys?.p256dh || !msg.subscription?.keys?.auth) {
+          this.send(ws, { type: "error", error: "Invalid push subscription" });
+          return;
+        }
+        this.pushMgr.addSubscription(msg.subscription, msg.pushLabel);
+        this.send(ws, { type: "push_status", subscribed: true });
+        break;
+      }
+
+      case "push_unsubscribe": {
+        if (this.pushMgr && msg.subscription?.endpoint) {
+          this.pushMgr.removeSubscription(msg.subscription.endpoint);
+        }
+        this.send(ws, { type: "push_status", subscribed: false });
         break;
       }
 
