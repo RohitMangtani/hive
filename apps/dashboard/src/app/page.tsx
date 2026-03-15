@@ -146,7 +146,7 @@ export default function Home() {
   }, []);
 
   const { connected, workers, chatEntries, send, subscribeTo, addOptimisticEntry, isAdmin, reconnect, reviews, markReviewSeen, dismissReview, markAllReviewsSeen, clearAllReviews, models, vapidKey } = useHive(daemonUrl);
-  usePushSubscription(send, vapidKey);
+  const { pushState, requestPush } = usePushSubscription(send, vapidKey);
   const [authError, setAuthError] = useState(false);
 
   useEffect(() => {
@@ -266,6 +266,31 @@ export default function Home() {
             >
               &#128275;
             </button>
+          )}
+          {/* Push notification bell — right side, next to review button */}
+          {pushState !== "unsupported" && pushState !== "subscribed" && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); requestPush(); }}
+              className="absolute right-8 top-0 text-[10px] text-[var(--text-light)] hover:text-[var(--text)] transition-colors px-2 py-1 cursor-pointer"
+              title={pushState === "denied" ? "Notifications blocked" : "Enable notifications"}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+            </button>
+          )}
+          {pushState === "subscribed" && (
+            <span
+              className="absolute right-8 top-0 text-[10px] text-[var(--dot-active)] px-2 py-1"
+              title="Notifications enabled"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+            </span>
           )}
           {/* Review queue button — right side */}
           <button

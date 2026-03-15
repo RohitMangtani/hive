@@ -1,17 +1,8 @@
 "use client";
 
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useState } from "react";
 import type { DaemonMessage } from "@/lib/types";
 
-/**
- * Registers the service worker and manages Web Push subscription.
- *
- * Push subscription lifecycle:
- * 1. SW registers on mount
- * 2. Parent page sends VAPID key via BroadcastChannel when received from daemon WS
- * 3. This component subscribes to push and sends the subscription back
- * 4. Parent page forwards subscription to daemon via WS
- */
 export function ServiceWorker() {
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
@@ -20,40 +11,68 @@ export function ServiceWorker() {
   return null;
 }
 
+export type PushState = "unsupported" | "prompt" | "subscribed" | "denied";
+
 /**
- * Hook that subscribes to Web Push when a VAPID key is available.
- * Call from the main page component that has access to the WS send function.
+ * Hook for Web Push subscription.
+ * Returns pushState and a requestPush() function that MUST be called from a user gesture (tap).
+ * iOS PWAs require user-initiated events for Notification.requestPermission().
  */
 export function usePushSubscription(
   send: (msg: DaemonMessage) => boolean,
   vapidKey: string | null,
-) {
-  const subscribe = useCallback(async (key: string) => {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+): { pushState: PushState; requestPush: () => void } {
+  const [pushState, setPushState] = useState<PushState>("unsupported");
+
+  // Detect initial state
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+      setPushState("unsupported");
+      return;
+    }
+    if (Notification.permission === "denied") {
+      setPushState("denied");
+      return;
+    }
+    // Check if already subscribed
+    navigator.serviceWorker.ready.then((reg) => {
+      reg.pushManager.getSubscription().then((sub) => {
+        if (sub) {
+          setPushState("subscribed");
+          // Re-send subscription to daemon (survives daemon restart)
+          if (vapidKey) {
+            const json = sub.toJSON();
+            if (json.endpoint && json.keys?.p256dh && json.keys?.auth) {
+              send({
+                type: "push_subscribe",
+                subscription: {
+                  endpoint: json.endpoint,
+                  keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+                },
+                pushLabel: getDeviceLabel(),
+              });
+            }
+          }
+        } else {
+          setPushState("prompt");
+        }
+      });
+    }).catch(() => {});
+  }, [vapidKey, send]);
+
+  // Must be called from a user gesture (click/tap) — iOS requirement
+  const requestPush = useCallback(async () => {
+    if (!vapidKey || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
 
     try {
-      const reg = await navigator.serviceWorker.ready;
-
-      // Check if already subscribed
-      const existing = await reg.pushManager.getSubscription();
-      if (existing) {
-        // Re-send to daemon in case it lost the subscription (restart, etc.)
-        const sub = existing.toJSON();
-        if (sub.endpoint && sub.keys?.p256dh && sub.keys?.auth) {
-          send({
-            type: "push_subscribe",
-            subscription: {
-              endpoint: sub.endpoint,
-              keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
-            },
-            pushLabel: getDeviceLabel(),
-          });
-        }
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setPushState("denied");
         return;
       }
 
-      // Convert VAPID key from base64url to Uint8Array
-      const keyBytes = urlBase64ToUint8Array(key);
+      const reg = await navigator.serviceWorker.ready;
+      const keyBytes = urlBase64ToUint8Array(vapidKey);
 
       const subscription = await reg.pushManager.subscribe({
         userVisibleOnly: true,
@@ -70,18 +89,15 @@ export function usePushSubscription(
           },
           pushLabel: getDeviceLabel(),
         });
+        setPushState("subscribed");
       }
     } catch (err) {
-      // Permission denied or not supported — fail silently
       console.log("[push] Subscription failed:", err);
+      setPushState("denied");
     }
-  }, [send]);
+  }, [vapidKey, send]);
 
-  useEffect(() => {
-    if (vapidKey) {
-      subscribe(vapidKey);
-    }
-  }, [vapidKey, subscribe]);
+  return { pushState, requestPush };
 }
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
