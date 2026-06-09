@@ -1,7 +1,8 @@
-import { createReadStream, existsSync, mkdirSync, openSync, readFileSync, statSync } from "fs";
+import { chmodSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, statSync } from "fs";
 import { extname, join, normalize } from "path";
-import { homedir } from "os";
+import { homedir, platform } from "os";
 import { spawn } from "child_process";
+import { timingSafeEqual } from "crypto";
 import http from "http";
 import net from "net";
 
@@ -11,6 +12,10 @@ if (!runtimeRoot) {
 }
 
 const mode = process.env.HIVE_DESKTOP_MODE || "fresh";
+// One-time secret minted by the Tauri shell per launch. /bootstrap only reads
+// the admin token from disk when the caller presents this secret, so arbitrary
+// local processes cannot harvest the token from the loopback HTTP server.
+const bootstrapSecret = process.env.HIVE_BOOTSTRAP_SECRET || "";
 const primaryUrl = process.env.HIVE_DESKTOP_PRIMARY_URL || "";
 const primaryToken = process.env.HIVE_DESKTOP_PRIMARY_TOKEN || "";
 const dashboardPort = Number(process.env.HIVE_DASHBOARD_PORT || 3310);
@@ -27,6 +32,42 @@ mkdirSync(logsDir, { recursive: true });
 
 const daemonLog = openSync(join(logsDir, "desktop-daemon.log"), "a");
 const launcherLog = openSync(join(logsDir, "desktop-launcher.log"), "a");
+
+const sendReturnBin = join(homedir(), "send-return");
+const sendReturnSource = join(runtimeRoot, "tools", "send-return.swift");
+
+// The daemon's two-step send relies on ~/send-return for the Return keystroke.
+// CLI installs compile it in setup.sh; the desktop bundle has no shell scripts,
+// so compile it here on first run when swiftc is available. Never overwrite an
+// existing binary (its Accessibility grant is tied to the exact file).
+function ensureSendReturn() {
+  if (platform() !== "darwin") return;
+  if (existsSync(sendReturnBin)) return;
+  if (!existsSync(sendReturnSource)) {
+    process.stderr.write("[desktop-launcher] WARNING: send-return source missing from runtime; dashboard sends will type text but cannot press Enter.\n");
+    return;
+  }
+  const compile = spawn("swiftc", ["-o", sendReturnBin, sendReturnSource], {
+    stdio: ["ignore", launcherLog, launcherLog],
+  });
+  compile.on("error", () => {
+    process.stderr.write("[desktop-launcher] WARNING: swiftc not found; cannot compile ~/send-return. Dashboard sends will type text but cannot press Enter. Install Xcode Command Line Tools and relaunch.\n");
+  });
+  compile.on("exit", (code) => {
+    if (code === 0) {
+      try {
+        chmodSync(sendReturnBin, 0o755);
+      } catch {
+        // Best effort only.
+      }
+      process.stdout.write(`[desktop-launcher] Compiled ${sendReturnBin}. Grant it Accessibility permission for auto-pilot.\n`);
+    } else if (code !== null) {
+      process.stderr.write(`[desktop-launcher] WARNING: swiftc exited with code ${code}; ~/send-return was not compiled. Dashboard sends will type text but cannot press Enter.\n`);
+    }
+  });
+}
+
+ensureSendReturn();
 
 function portOpen(port) {
   return new Promise((resolve) => {
@@ -71,6 +112,14 @@ const contentTypes = {
 function sendJson(res, payload) {
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(payload));
+}
+
+function secretMatches(candidate) {
+  if (!bootstrapSecret || !candidate) return false;
+  const expected = Buffer.from(bootstrapSecret);
+  const provided = Buffer.from(candidate);
+  if (expected.length !== provided.length) return false;
+  return timingSafeEqual(expected, provided);
 }
 
 function bootstrapHtml(token) {
@@ -126,12 +175,24 @@ if (mode === "fresh") {
         wsPort,
         reuseExistingDaemon,
         tokenReady: existsSync(adminTokenPath),
+        sendReturnReady: platform() !== "darwin" || existsSync(sendReturnBin),
       });
       return;
     }
 
     if (url.pathname === "/bootstrap" || url.pathname === "/bootstrap.html") {
-      const token = url.searchParams.get("token") || (existsSync(adminTokenPath) ? readFileSync(adminTokenPath, "utf8").trim() : "");
+      // Two legitimate callers: the webview passes ?token= explicitly (no new
+      // information disclosed), and the Tauri shell's launch URL passes the
+      // one-time ?secret= it minted. Anything else gets the token withheld so
+      // arbitrary local processes cannot read ~/.hive/token over loopback.
+      let token = url.searchParams.get("token") || "";
+      if (!token && secretMatches(url.searchParams.get("secret"))) {
+        token = existsSync(adminTokenPath) ? readFileSync(adminTokenPath, "utf8").trim() : "";
+      } else if (!token) {
+        res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Forbidden: bootstrap requires the launch secret or an explicit token.");
+        return;
+      }
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(bootstrapHtml(token));
       return;
@@ -148,6 +209,15 @@ if (mode === "fresh") {
     }
 
     serveFile(res, filePath);
+  });
+
+  dashboardServer.on("error", (err) => {
+    if (err && err.code === "EADDRINUSE") {
+      process.stderr.write(`[desktop-launcher] Port ${dashboardPort} is already in use. Another Hive desktop launcher appears to be running. Stop it (or quit the other Hive window) and relaunch.\n`);
+    } else {
+      process.stderr.write(`[desktop-launcher] Dashboard server error: ${err && err.message ? err.message : err}\n`);
+    }
+    shutdown();
   });
 
   dashboardServer.listen(dashboardPort, "127.0.0.1");
@@ -199,7 +269,17 @@ function shutdown() {
 
 if (daemon) {
   daemon.on("exit", (code) => {
-    if (!shuttingDown && code && code !== 0) {
+    if (shuttingDown) return;
+    // Exit 0 in fresh mode means the runtime-singleton lock was lost: an
+    // external daemon (e.g. launchd) already owns 3001/3002. Keep the 3310
+    // dashboard server alive and serve against the existing daemon instead
+    // of tearing the whole wrapper down.
+    if (code === 0 && mode === "fresh" && dashboardServer) {
+      daemon = null;
+      process.stdout.write("[desktop-launcher] Daemon exited as duplicate; reusing the already-running daemon.\n");
+      return;
+    }
+    if (code && code !== 0) {
       process.stderr.write(`Hive desktop daemon exited with code ${code}\n`);
     }
     shutdown();

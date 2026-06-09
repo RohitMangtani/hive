@@ -242,7 +242,7 @@ function render(): void {
       await loadStatus();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      currentStatus.note = message;
+      if (currentStatus) currentStatus.note = message;
       frameUrl = null;
       render();
     } finally {

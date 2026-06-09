@@ -13,6 +13,7 @@ const hookDir = join(repoRoot, "apps", "daemon", "src", "hooks");
 const dashboardOut = join(repoRoot, "apps", "dashboard", "out");
 const launcherSrc = join(desktopDir, "scripts", "desktop-launcher.mjs");
 const desktopDaemonSrc = join(desktopDir, "scripts", "desktop-daemon.mjs");
+const sendReturnSrc = join(repoRoot, "tools", "send-return.swift");
 const runtimeNodeModules = join(hiveRuntimeRoot, "node_modules");
 const daemonPackage = JSON.parse(readFileSync(join(repoRoot, "apps", "daemon", "package.json"), "utf8"));
 
@@ -31,12 +32,16 @@ mkdirSync(join(hiveRuntimeRoot, "apps", "dashboard"), { recursive: true });
 mkdirSync(join(generatedRoot, "launcher"), { recursive: true });
 mkdirSync(join(generatedRoot, "bin"), { recursive: true });
 mkdirSync(join(generatedRoot, "lib"), { recursive: true });
+mkdirSync(join(generatedRoot, "tools"), { recursive: true });
 
 cpSync(daemonDist, join(hiveRuntimeRoot, "apps", "daemon", "dist"), { recursive: true });
 cpSync(hookDir, join(hiveRuntimeRoot, "apps", "daemon", "src", "hooks"), { recursive: true });
 cpSync(dashboardOut, join(hiveRuntimeRoot, "apps", "dashboard", "out"), { recursive: true });
 cpSync(launcherSrc, join(generatedRoot, "launcher", "desktop-launcher.mjs"));
 cpSync(desktopDaemonSrc, join(generatedRoot, "launcher", "desktop-daemon.mjs"));
+// Swift source for the Return-keystroke helper. The launcher compiles it to
+// ~/send-return on first run (macOS + swiftc) so dashboard sends can submit.
+cpSync(sendReturnSrc, join(generatedRoot, "tools", "send-return.swift"));
 cpSync(process.execPath, join(generatedRoot, "bin", "node"));
 chmodSync(join(generatedRoot, "bin", "node"), 0o755);
 
@@ -45,6 +50,9 @@ if (existsSync(nodeLibDir)) {
   for (const entry of readdirSync(nodeLibDir)) {
     if (entry.startsWith("libnode") && entry.endsWith(".dylib")) {
       cpSync(join(nodeLibDir, entry), join(generatedRoot, "lib", entry));
+      // Homebrew dylibs are read-only; keep the staged copy writable so
+      // tauri-build can overwrite its target/ copy on rebuilds.
+      chmodSync(join(generatedRoot, "lib", entry), 0o755);
     }
   }
 }

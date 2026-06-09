@@ -13,6 +13,10 @@ use tauri::{AppHandle, Manager, State};
 
 struct LauncherState {
     child: Mutex<Option<Child>>,
+    // One-time secret minted per launcher spawn. The launcher's /bootstrap
+    // endpoint only reads ~/.hive/token when this secret is presented, so
+    // other local processes cannot harvest the admin token over loopback.
+    bootstrap_secret: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +69,26 @@ fn logs_dir() -> PathBuf {
 
 fn token_path() -> PathBuf {
     hive_dir().join("token")
+}
+
+fn send_return_path() -> PathBuf {
+    home_dir().join("send-return")
+}
+
+fn random_hex(bytes: usize) -> Result<String, String> {
+    use std::io::Read;
+    let mut buf = vec![0u8; bytes];
+    File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut buf))
+        .map_err(|err| err.to_string())?;
+    Ok(buf.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn bootstrap_url(secret: Option<&str>) -> String {
+    match secret {
+        Some(value) => format!("http://127.0.0.1:3310/bootstrap.html?secret={value}"),
+        None => "http://127.0.0.1:3310/bootstrap.html".into(),
+    }
 }
 
 fn write_secret(path: &Path, value: &str) -> Result<(), String> {
@@ -130,17 +154,24 @@ fn open_log_file() -> Result<File, io::Error> {
         .open(logs_dir().join("desktop-wrapper.log"))
 }
 
-fn status_note(config: Option<&DesktopConfig>) -> Option<String> {
-    match config {
+fn status_note(config: Option<&DesktopConfig>, launcher_running: bool, external_daemon: bool) -> Option<String> {
+    if external_daemon && !launcher_running {
+        return Some("A Hive daemon is already running on this machine (port 3001). Start Hive to attach the desktop dashboard to it.".into());
+    }
+    let base = match config {
         Some(cfg) if cfg.mode == "connect" && cfg.dashboard_url.as_deref().unwrap_or("").is_empty() => {
             Some("Satellite mode is configured. Add the primary dashboard URL if you want the wrapper to load the full remote control plane in-app.".into())
         }
-        Some(cfg) if cfg.mode == "fresh" && !port_open(3310) => {
+        Some(cfg) if cfg.mode == "fresh" && !launcher_running => {
             Some("Fresh mode is configured. Launch Hive to boot the local daemon sidecar and load the dashboard in this app.".into())
         }
         None => Some("Choose Start New Hive or Join Existing Hive to replace the public shell-script install path with a native wrapper flow.".into()),
         _ => None,
+    };
+    if base.is_none() && config.is_some() && cfg!(target_os = "macos") && !send_return_path().exists() {
+        return Some("The ~/send-return helper is not compiled yet, so dashboard messages cannot press Enter. Install Xcode Command Line Tools (xcode-select --install) and relaunch Hive.".into());
     }
+    base
 }
 
 fn compute_status(state: &State<LauncherState>) -> DesktopStatus {
@@ -160,14 +191,18 @@ fn compute_status(state: &State<LauncherState>) -> DesktopStatus {
             None
         }
     });
+    // The wrapper is "running" when our own launcher child is alive or its
+    // dashboard server answers on 3310. An external daemon on 3001 (e.g. a
+    // launchd CLI install) is NOT the wrapper -- treating it as running used
+    // to produce a dead 3310 iframe before the launcher ever started.
     let launcher_running = state
         .child
         .lock()
         .ok()
         .and_then(|mut guard| guard.as_mut().map(|child| child.try_wait().ok().flatten().is_none()))
         .unwrap_or(false)
-        || port_open(3001)
         || port_open(3310);
+    let external_daemon = port_open(3001);
 
     DesktopStatus {
         configured_mode: config.as_ref().map(|cfg| cfg.mode.clone()),
@@ -181,7 +216,7 @@ fn compute_status(state: &State<LauncherState>) -> DesktopStatus {
             codex: command_exists("codex"),
             openclaw: command_exists("openclaw"),
         },
-        note: status_note(config.as_ref()),
+        note: status_note(config.as_ref(), launcher_running, external_daemon),
     }
 }
 
@@ -237,8 +272,9 @@ fn launch_hive(app: AppHandle, state: State<LauncherState>) -> Result<Option<Str
     if let Ok(mut guard) = state.child.lock() {
         if let Some(child) = guard.as_mut() {
           if child.try_wait().map_err(|err| err.to_string())?.is_none() {
+            let secret = state.bootstrap_secret.lock().ok().and_then(|s| s.clone());
             return Ok(match config.mode.as_str() {
-                "fresh" => Some("http://127.0.0.1:3310/bootstrap.html".into()),
+                "fresh" => Some(bootstrap_url(secret.as_deref())),
                 "connect" => config.dashboard_url.clone(),
                 _ => None,
             });
@@ -247,12 +283,17 @@ fn launch_hive(app: AppHandle, state: State<LauncherState>) -> Result<Option<Str
 
         let log = open_log_file().map_err(|err| err.to_string())?;
         let log_err = log.try_clone().map_err(|err| err.to_string())?;
+        let secret = random_hex(32)?;
+        if let Ok(mut secret_guard) = state.bootstrap_secret.lock() {
+            *secret_guard = Some(secret.clone());
+        }
 
         let mut command = Command::new(node_path);
         command.arg(launcher_path);
         command.env("HIVE_RUNTIME_ROOT", &runtime);
         command.env("HIVE_DESKTOP_MODE", &config.mode);
         command.env("HIVE_DASHBOARD_PORT", "3310");
+        command.env("HIVE_BOOTSTRAP_SECRET", &secret);
         if let Some(primary_url) = config.primary_url.as_deref() {
             command.env("HIVE_DESKTOP_PRIMARY_URL", primary_url);
         }
@@ -269,8 +310,9 @@ fn launch_hive(app: AppHandle, state: State<LauncherState>) -> Result<Option<Str
         *guard = Some(child);
     }
 
+    let secret = state.bootstrap_secret.lock().ok().and_then(|s| s.clone());
     Ok(match config.mode.as_str() {
-        "fresh" => Some("http://127.0.0.1:3310/bootstrap.html".into()),
+        "fresh" => Some(bootstrap_url(secret.as_deref())),
         "connect" => config.dashboard_url.clone(),
         _ => None,
     })
@@ -291,6 +333,7 @@ fn main() {
     tauri::Builder::default()
         .manage(LauncherState {
             child: Mutex::new(None),
+            bootstrap_secret: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             desktop_status,
