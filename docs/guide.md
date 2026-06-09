@@ -25,8 +25,9 @@ It solves four problems:
 
 ### What You Need
 
-- **macOS** or **Linux with tmux** (Linux support is implemented and working; live-host testing across more distributions is ongoing)
+- **macOS**, **Windows**, or **Linux with tmux** (Linux support is implemented and working; live-host testing across more distributions is ongoing. Windows works with two caveats described in the Windows section below.)
 - **Node.js 20+** ([nodejs.org](https://nodejs.org))
+- **python3** (on macOS it comes with the Xcode Command Line Tools; on Windows it must be visible from Git Bash)
 - At least one AI CLI: `claude`, `codex`, or `openclaw`
 - A free [Vercel](https://vercel.com) account (for the hosted dashboard)
 
@@ -34,7 +35,7 @@ It solves four problems:
 
 The fastest path is to paste this into Claude Code or Codex and let the agent handle it:
 
-> Install Hive for me. Clone https://github.com/RohitMangtani/hive. Before running the install script, ask me: "Which setup do you want? (1) Desktop app on this Mac, (2) New Hive environment with your own hosted dashboard, or (3) Connect this Mac to an existing Hive network on another computer."
+> Install Hive for me. Clone https://github.com/RohitMangtani/hive. Before running the install script, ask me: "Which setup do you want? (1) Desktop app on this computer, (2) New Hive environment with your own hosted dashboard, or (3) Connect this computer to an existing Hive network on another machine."
 
 Or install manually:
 
@@ -44,7 +45,7 @@ cd hive
 bash scripts/install.sh --fresh
 ```
 
-The script checks Node.js, installs dependencies, generates your auth token, configures Claude Code hooks, and optionally compiles the auto-pilot binary.
+The script checks Node.js, installs dependencies, generates your auth token, configures Claude Code hooks, and optionally compiles the auto-pilot binary. The machine-wide auto-approve hook is consent-gated: interactive installs explain it and ask Y/n, and you can control it with `--auto-approve` / `--no-auto-approve` (or remove it later with `bash setup-hooks.sh --no-auto-approve`). On Windows, use `powershell -File scripts\install.ps1 -Fresh` instead.
 
 ### Quick Start (local only, no Vercel)
 
@@ -63,7 +64,7 @@ Open `http://localhost:3000`, then open terminals and run `claude`, `codex`, or 
 After install, macOS asks for two things:
 
 1. **Automation permission**: "Terminal wants to control Terminal." Click OK. This lets Hive send messages to agent terminals.
-2. **Accessibility permission** (optional): Drag `send-return` into System Settings > Privacy & Security > Accessibility and toggle it on. This enables auto-pilot, which auto-approves agent permission prompts so they never sit idle.
+2. **Accessibility permission** (optional): Drag `send-return` into System Settings > Privacy & Security > Accessibility and toggle it on. This enables auto-pilot, which auto-approves agent permission prompts so they never sit idle, and lets dashboard messages press Enter to submit. Desktop app users do not need to run `setup.sh` for this: the app compiles `~/send-return` automatically on first launch when the Xcode Command Line Tools are present.
 
 ### Linux Setup (tmux)
 
@@ -74,6 +75,15 @@ On Linux, Hive uses tmux instead of Terminal.app. Before running the daemon:
 3. **Attach to it**: `tmux attach -t hive` to see agent panes side by side.
 
 No accessibility permissions or special binaries are needed on Linux. Terminal I/O goes through tmux's `send-keys` command directly. Auto-pilot works out of the box once the tmux session is running.
+
+### Windows Setup
+
+A Windows primary needs Git Bash with python3 visible from bash. Windows Terminal is recommended (`winget install Microsoft.WindowsTerminal`). Install with `powershell -File scripts\install.ps1 -Fresh` (or `-Connect -Url URL -Token TOKEN` to join an existing network).
+
+Two things work differently on Windows:
+
+1. **Messages arrive via hooks, not keystrokes.** A message sent from the dashboard reaches a Windows agent on its next prompt or tool call, not instantly.
+2. **Prompt approval happens at the terminal.** Dashboard approve/selection clicks return an explicit error ("Keystroke delivery is not supported on Windows"); answer the prompt in the terminal window itself.
 
 ### Your Token
 
@@ -89,7 +99,7 @@ Setup prints an auth token. Copy it. Open the dashboard URL, paste the token int
 npm run launch
 ```
 
-This starts the daemon, opens a public tunnel, deploys the dashboard to your Vercel account, and opens it in your browser. Keep this terminal running.
+This starts the daemon, opens a public tunnel, deploys the dashboard to your Vercel account, and opens it in your browser. Keep this terminal running. On macOS, `bash scripts/install.sh --fresh` also registers a `com.hive.daemon` LaunchAgent so the primary daemon auto-starts at login and survives reboots without a terminal window (stop it with `launchctl bootout gui/$(id -u)/com.hive.daemon`).
 
 ### Other Options
 
@@ -173,7 +183,7 @@ Mix them on purpose. Use one model to audit what another built. Different models
 
 ### Multi-Machine
 
-Connect additional Macs as satellites. On the second computer:
+Connect additional Macs, Windows PCs, or Linux machines as satellites. On the second computer:
 
 ```bash
 bash scripts/install.sh --connect wss://YOUR-TUNNEL-URL YOUR-TOKEN
@@ -181,7 +191,7 @@ bash scripts/install.sh --connect wss://YOUR-TUNNEL-URL YOUR-TOKEN
 
 The tunnel URL and token are printed at the end of the primary install (also at `~/.hive/tunnel-url.txt` and `~/.hive/token`). Satellite agents appear in the same dashboard alongside local ones. Messages, tasks, and coordination route transparently across machines.
 
-Satellites run as a background service and survive sleep, reboot, and terminal close.
+Satellites run as a background service and survive sleep, reboot, and terminal close. Auto-updates are validated before restart (failed updates roll back to the previous commit), and each machine keeps a persistent identity in `~/.hive/machine-id` so identically named machines never collide.
 
 ### Coordination
 
@@ -246,7 +256,7 @@ Agents search learnings by keyword (`/api/learnings?q=keyword`) instead of readi
 Two channels, zero setup:
 
 - **macOS desktop**: Native notification when an agent goes stuck (yellow). 60-second cooldown per agent.
-- **Web Push (iOS/Android/browser)**: Notification when an agent finishes (green to red). 15-second cooldown. Tap the bell icon on the dashboard to subscribe.
+- **Web Push (iOS/Android/browser)**: Notification when an agent finishes (green to red). 15-second cooldown. Tap the bell icon on the dashboard to subscribe. Completion pushes also fire for satellite agents, whether dispatched from dashboard chat, the REST API, the task queue, the outbox, or queued messages.
 
 ### Review Queue
 
@@ -256,8 +266,9 @@ Auto-detects `git push`, `gh pr create`, and Vercel deploys across all agents. A
 
 Invite collaborators to the same dashboard:
 
-- **Admin**: Full control (spawn, kill, message, manage users)
-- **Operator**: Can message agents and manage tasks
+- **Admin**: Full control (spawn, kill, message, revert, manage users and reviews)
+- **Operator**: Can message agents and manage tasks. Spawning, killing, reverting, dismissing reviews, and managing or listing users are admin-only, on both REST and the WebSocket.
+- **Voice**: Same rights as operator over the WebSocket (message, prompt approval, selections, uploads, reads), minus the admin-gated operations. Intended for voice-driven clients.
 - **Viewer**: Read-only dashboard access
 
 Live presence shows who is watching. Message attribution shows who sent what. An activity feed broadcasts human actions to all connected users.
@@ -324,6 +335,8 @@ After solving anything non-obvious, have the agent write a learning via `POST /a
 | Chat in wrong terminal | Send a prompt to each terminal to update marker files. Check: `ls ~/.hive/sessions/` |
 | Hooks not reporting | Claude only. Re-run `bash setup-hooks.sh`. Test by using any tool in Claude and checking daemon logs. |
 | Runtime drift | Run `npm run doctor` to diagnose and repair. |
+| Satellite logs "Exhausted all known primary URL candidate(s)" | Read the current URL on the primary (`cat ~/.hive/tunnel-url.txt`) and re-run `bash scripts/install.sh --connect <url> <token>` on the satellite. |
+| Satellite gave up auto-updating | Repeated failed updates back off (5m/20m/80m) and stop after 4 attempts. Delete `~/.hive/update-state.json` on the satellite to force an immediate retry. |
 
 ---
 
@@ -339,6 +352,10 @@ After solving anything non-obvious, have the agent write a learning via `POST /a
 | Notification config | `~/.hive/notifications.json` |
 | Daemon state | `~/.hive/daemon-state.json` |
 | Session markers | `~/.hive/sessions/` |
+| Machine identity | `~/.hive/machine-id` |
+| Satellite update backoff state | `~/.hive/update-state.json` |
+| Primary URL history | `~/.hive/primary-urls-history.txt` |
+| Satellite logs | `~/.hive/logs/satellite.*.log` |
 | Project learnings | `.claude/hive-learnings.md` |
 
 ---

@@ -63,9 +63,9 @@ For each discovered process:
 
 New agents appear on the dashboard within 3-6 seconds.
 
-### 2. Status Detection (7-Layer Pipeline)
+### 2. Status Detection (Seven JSONL/Hook Layers + CPU/PTY Corroboration)
 
-The status detection system determines whether an agent is working (green), idle (red), or stuck (yellow). Seven cooperating layers prevent phantom green (false working state):
+The status detection system determines whether an agent is working (green), idle (red), or stuck (yellow). Seven cooperating JSONL/hook layers plus a CPU/PTY corroboration signal prevent phantom green (false working state):
 
 | Layer | Where | What it does |
 |-------|-------|-------------|
@@ -77,7 +77,7 @@ The status detection system determines whether an agent is working (green), idle
 | 6. Idle lock | `runJsonlAnalysis` | Hysteresis-confirmed idle is locked until real evidence of work |
 | 7. Input override | `runJsonlAnalysis` | Dashboard message clears idle lock immediately |
 
-Additionally, **Layer 8 (CPU/PTY signal)** checks process CPU usage and terminal output byte offsets when other signals are ambiguous.
+On top of those seven, the **CPU/PTY corroboration signal** (Layer 8a: process CPU usage, Layer 8b: terminal output byte offsets) checks for real activity when the other signals are ambiguous.
 
 ### 3. Hook Events (`telemetry.ts`)
 
@@ -116,12 +116,17 @@ Hive supports multiple humans on the same dashboard with role-based access.
 
 ### User Registry (`user-registry.ts`)
 
-Named users with per-user tokens and three roles:
-- **Admin**: full control (spawn, kill, message, manage users)
-- **Operator**: can message agents and manage tasks, cannot kill/spawn/manage users
+Named users with per-user tokens and four roles:
+- **Admin**: full control (spawn, kill, message, revert, manage users and reviews)
+- **Operator**: can message agents and manage tasks, cannot kill/spawn/revert/manage users
+- **Voice**: same WebSocket rights as operator (message, selection, prompt approval, context transfer, file upload, subscriptions, all reads), minus the admin-gated types; intended for voice-driven clients
 - **Viewer**: read-only dashboard access
 
 Users are stored at `~/.hive/users.json`. The existing single admin token from `~/.hive/token` is backwards-compatible: on first load, a bootstrap admin user is created from it. The legacy viewer token (SHA-256 derived) also continues to work.
+
+### WebSocket Admin Gating
+
+Role enforcement applies to the WebSocket control plane, not just REST. Over WS, the message types `spawn`, `kill`, `revert`, `review_dismiss`, `review_clear_all`, `user_list`, `user_create`, and `user_remove` require the admin role and return `{type: "error", error: "Admin access required"}` for operator and voice tokens, mirroring REST's `requireAdmin` routes (`POST /api/spawn`, `/api/kill`, `/api/revert`, `DELETE /api/reviews[/:id]`, `/api/users`). Operator and voice retain `message`, `selection`, `approve_prompt`, `context_transfer`, `upload_file`, subscriptions, and all reads. Two operator-visible consequences: listing users (`user_list`, used by the Invite dialog) and dismissing or clearing reviews are admin-only over WS. Viewers are unchanged: a read-only allowlist of `list`, `worker_context`, `push_subscribe`, and `push_unsubscribe`.
 
 ### Presence
 
@@ -172,7 +177,7 @@ Human actions (messages sent, agents spawned, prompts approved) are broadcast as
 
 | Package | Purpose |
 |---------|---------|
-| `@rohitmangtani/hive` | CLI package for `hive init` and `hive doctor` flows |
+| `@rohitmangtani/hive` | CLI package for `hive init` and `hive doctor` flows (not yet published to npm; run via `npm run hive` from a clone) |
 | `@hive/types` | Shared TypeScript interfaces (WorkerState, etc.) |
 
 ## Multi-Machine Federation
@@ -186,7 +191,17 @@ Satellite machines connect to the primary daemon via WebSocket tunnel:
 5. Primary merges satellite workers into the dashboard alongside local ones
 6. Commands (message, spawn, kill) are relayed bidirectionally
 
-Satellite self-healing: disconnected satellites escalate from reconnect → local repair → local reinstall using stored credentials at `~/.hive/primary-url` and `~/.hive/primary-token`.
+Satellite self-healing: disconnected satellites escalate from reconnect → local repair → local reinstall using stored credentials at `~/.hive/primary-url` and `~/.hive/primary-token`. Federation dials time out after 15 seconds instead of waiting for the OS TCP timeout, so URL rotation proceeds promptly during outages. Tunnel restarts only target the actual tunnel spawn signatures, never arbitrary processes whose command line happens to mention ngrok or cloudflared.
+
+### Machine Identity and Update Safety
+
+- **Machine identity** is persisted in `~/.hive/machine-id` (hostname plus a 4-character random suffix, generated once), so identically named machines never collide. Deleting the file changes the satellite's identity.
+- **Auto-updates are gated and validated.** After `git pull`, the satellite runs `npm install` (600-second timeout) and `npx tsc --noEmit` before restarting. Failures roll back to the pre-pull commit via `git reset --keep` and report `ok:false` to the primary. Nothing restarts on a no-op pull.
+- **Update-loop protection.** Repeated failed updates from the same running version back off exponentially (5m/20m/80m) and give up loudly after 4 attempts with a 6-hour auto-retry. State lives in `~/.hive/update-state.json`; delete it to force an immediate retry.
+- **URL history.** `~/.hive/primary-urls-history.txt` records every primary URL the satellite has ever learned (last 20).
+- **Merged worker view.** On satellites, `~/.hive/workers.json` always contains the merged cross-machine view, so `identity.sh` peer summaries work on satellites too. Peers age out 2 minutes after federation loss.
+- **Push key hygiene.** `~/.hive/vapid.json` and `~/.hive/push-subs.json` are mode 600. A corrupt or invalid `vapid.json` no longer crash-loops the daemon: keys regenerate automatically, or push is disabled for the run.
+- **Operator runbook.** When a satellite logs "Exhausted all known primary URL candidate(s)", read the current URL on the primary (`cat ~/.hive/tunnel-url.txt`) and re-run `bash scripts/install.sh --connect <url> <token>` on the satellite.
 
 ## Platform Abstraction
 
@@ -203,7 +218,8 @@ The daemon now loads its platform at startup through `apps/daemon/src/platform/`
 | Platform | Location | Status |
 |----------|----------|--------|
 | macOS | `platform/macos/index.ts` | Thin wrapper over existing `tty-input.ts`, `discovery.ts`, `arrange-windows.ts` |
-| Linux | `platform/linux/` | tmux-based: `send-keys`, `capture-pane`, `/proc` reads, pane-based layout. Wired into runtime, with live Linux host validation still pending. |
+| Linux | `platform/linux/` | tmux-based: `send-keys`, `capture-pane`, `/proc` reads, pane-based layout. Wired into runtime, with live Linux host validation still pending. Discovery matches `claude` started with arguments (including Hive's own spawner command and `node .../cli.js` wrappers). |
+| Windows | `platform/windows/` | PowerShell (`Get-CimInstance`) process discovery, file-based inbox delivery (`~/.hive/inbox/`): messages reach the agent via hooks on its next prompt or tool call. No keystroke delivery, so prompt approval/selection happens at the terminal. Window positions reported for separate-window (cmd.exe) installs; with Windows Terminal tabs, only the first agent per window reports a position. Agents whose working directory cannot be derived are attributed to HOME. |
 
 ### macOS-specific code (current direct imports)
 
@@ -249,4 +265,4 @@ Pre-Hive, 77% of active days had a single repository receiving commits. With Hiv
 
 ### What the system tracked
 
-Over the Hive period, the daemon logged 48,372 tool call events, 7,298 status transitions, caught 51 cross-agent file conflicts, and recorded 451 hourly coordination snapshots. The 7-layer detection pipeline described above produced these signals without any manual instrumentation from the user.
+Over the Hive period, the daemon logged 48,372 tool call events, 7,298 status transitions, caught 51 cross-agent file conflicts, and recorded 451 hourly coordination snapshots. The detection pipeline described above (seven JSONL/hook layers plus a CPU/PTY corroboration signal) produced these signals without any manual instrumentation from the user.

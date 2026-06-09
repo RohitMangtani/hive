@@ -25,11 +25,11 @@ Measured over 60 days across five repositories. The first 36 days used a single 
 
 The five projects: two websites with 25 published articles, this orchestration system, a YouTube pipeline, and a web crawler. Full methodology in [architecture.md](docs/architecture.md#measured-performance).
 
-**Multiplayer**: Invite collaborators to the same dashboard. Named users with roles (admin, operator, viewer), live presence (see who is watching), message attribution (see who sent what), and an activity feed. Like Google Docs for AI agents.
+**Multiplayer**: Invite collaborators to the same dashboard. Named users with roles (admin, operator, viewer, voice), live presence (see who is watching), message attribution (see who sent what), and an activity feed. Like Google Docs for AI agents.
 
 **How it works**: [A Visual Workflow for AI Agents](https://rohitmangtani.com/writing/a-visual-workflow-for-ai-agents) covers the design thinking behind Hive, from cognitive science to the feedback loops that make visual coordination faster than reading terminal output.
 
-**Architecture**: See [docs/architecture.md](docs/architecture.md) for the technical deep dive, including the 7-layer status detection pipeline, multi-machine federation protocol, and module map.
+**Architecture**: See [docs/architecture.md](docs/architecture.md) for the technical deep dive, including the status detection pipeline (seven JSONL/hook layers plus a CPU/PTY corroboration signal), multi-machine federation protocol, and module map.
 
 ## Install
 
@@ -45,6 +45,7 @@ When the agent runs, approve these one-time prompts:
 
 **What you need beforehand:**
 - macOS, Windows, or Linux with Node.js 20+ installed
+- python3 (on macOS this comes with the Xcode Command Line Tools; on Windows it must be visible from Git Bash)
 - A free [Vercel](https://vercel.com) account (the dashboard deploys here so you can access it from any device)
 - At least one AI CLI installed: `claude`, `codex`, or `openclaw`
 
@@ -74,13 +75,7 @@ npm run hive -- init --connect URL TOKEN
 npm run hive -- init --desktop
 ```
 
-The publish target for the external installer CLI is:
-
-```bash
-npx @rohitmangtani/hive init
-```
-
-The published CLI clones or reuses Hive at `~/hive` by default. Pass `--dir /path/to/hive` if you want a different install location.
+The CLI package is not yet published to npm, so cloning the repo first is required. Publishing it (so a single `npx` command can bootstrap everything) is planned. The CLI clones or reuses Hive at `~/hive` by default. Pass `--dir /path/to/hive` if you want a different install location.
 
 ### After install: one-time OS approvals
 
@@ -89,7 +84,11 @@ The published CLI clones or reuses Hive at `~/hive` by default. Pass `--dir /pat
 4. **Automation permission** -macOS asks "Terminal wants to control Terminal." Click **OK**. This lets Hive send messages to agents and close terminals from the dashboard. If you miss it: System Settings → Privacy & Security → Automation.
 5. **Accessibility permission** (optional). If setup compiled the auto-pilot binary, it opens System Settings and Finder. Drag `send-return` into the Accessibility list and toggle it on. This lets agents auto-approve their own prompts. Skip if you prefer manual approval.
 
-**Windows:** No special approvals needed. Windows Terminal is recommended for the best experience (`winget install Microsoft.WindowsTerminal`). The satellite installs as a Task Scheduler task that auto-starts at logon.
+**Windows:** No special approvals needed. Windows Terminal is recommended for the best experience (`winget install Microsoft.WindowsTerminal`). A Windows primary requires Git Bash with python3 visible from bash. The satellite installs as a Task Scheduler task that auto-starts at logon.
+
+Two Windows-specific behaviors to know about:
+- **Messages are delivered via hooks, not keystrokes.** A message sent from the dashboard reaches a Windows agent on its next prompt or tool call, not instantly.
+- **Prompt approval happens at the terminal.** Dashboard approve/selection clicks return an explicit error ("Keystroke delivery is not supported on Windows"); answer the prompt in the terminal window itself.
 
 ### Using your token
 
@@ -139,6 +138,12 @@ The connect install is idempotent. Re-running it on the same machine updates the
 
 If a satellite gets into a reconnect loop or stale state, Hive self-heals on the remote machine. A connected primary can trigger `update`, `repair`, or `reinstall`, and a disconnected satellite escalates from local repair to local reinstall automatically using the stored `~/.hive/primary-url` and `~/.hive/primary-token`.
 
+Satellite auto-updates are gated and validated. After `git pull`, the satellite runs `npm install` (with a 600-second timeout) and `npx tsc --noEmit` before restarting. Failures roll back to the pre-pull commit via `git reset --keep` and report `ok:false` to the primary. Nothing restarts on a no-op pull. Repeated failed updates from the same running version back off exponentially (5m/20m/80m) and give up loudly after 4 attempts with a 6-hour auto-retry; this state lives in `~/.hive/update-state.json` (delete it to force an immediate retry).
+
+Each satellite persists its identity in `~/.hive/machine-id` (hostname plus a 4-character random suffix, generated once), so identically named machines never collide. Deleting the file changes the satellite's identity. Every primary URL the satellite has ever learned is recorded in `~/.hive/primary-urls-history.txt` (last 20), and federation dials time out after 15 seconds so URL rotation proceeds promptly during outages. On satellites, `~/.hive/workers.json` always contains the merged cross-machine view, so peer summaries work there too; peers age out 2 minutes after federation loss. Satellite logs are at `~/.hive/logs/satellite.stdout.log` and `~/.hive/logs/satellite.stderr.log`.
+
+If a satellite logs "Exhausted all known primary URL candidate(s)", read the current URL on the primary (`cat ~/.hive/tunnel-url.txt`) and re-run `bash scripts/install.sh --connect <url> <token>` on the satellite.
+
 ### Windows via WSL (alternative)
 
 If you prefer running inside WSL2 instead of native Windows, that works too. Agents run inside WSL with full GPU access via WSL2's native GPU passthrough.
@@ -177,9 +182,10 @@ npm run launch:local
 
 ## Prerequisites
 
-- **macOS**, **Windows**, or **Linux** — all fully supported as primary or satellite
+- **macOS**, **Windows**, or **Linux** - all supported as primary or satellite. Windows has two caveats: dashboard prompt approval/selection is not supported on Windows agents (answer prompts at the terminal), and messages are delivered on the agent's next prompt or tool call rather than instantly. A Windows primary needs Git Bash with python3 visible from bash.
 - **Node.js 20+** - [nodejs.org](https://nodejs.org)
-- **Homebrew** - [brew.sh](https://brew.sh) (macOS only, for installing tunnel tools)
+- **python3** - used by the identity/peer-summary hooks, Windows inbox delivery, and tunnel URL parsing. On macOS it comes with the Xcode Command Line Tools.
+- **Homebrew** - [brew.sh](https://brew.sh) (macOS only, for installing tunnel tools). Linux does not need it: `install.sh` downloads the cloudflared static binary from GitHub releases when no tunnel tool is present.
 
 That's it. Everything else is optional and the setup script handles it gracefully:
 
@@ -191,7 +197,7 @@ That's it. Everything else is optional and the setup script handles it gracefull
 | Cloudflare tunnel (auto-fallback) | Phone/remote access, random URLs | `brew install cloudflared` |
 | Vercel account | Hosted dashboard | `npx vercel login` |
 
-Without an AI CLI, setup still completes. Install one later and agents auto-appear. Without `swiftc`, everything works except auto-pilot. Without Vercel or a public tunnel tool, use `npm run launch:local` for localhost-only.
+Without an AI CLI, setup still completes. Install one later and agents auto-appear. Without `swiftc` there is no `~/send-return` binary, which disables auto-pilot and also means dashboard message delivery cannot press Enter on macOS (install/setup compiles it from `tools/send-return.swift`; the desktop app compiles it on first launch when the Xcode Command Line Tools are present). Without Vercel or a public tunnel tool, use `npm run launch:local` for localhost-only.
 
 Claude, Codex, and OpenClaw can be mixed freely. Claude gets the richest hook-based telemetry. Codex and OpenClaw work out of the box through JSONL, CPU, and PTY detection. Any other terminal agent can be added via a config file (see [Custom Agents](#custom-agents)).
 
@@ -204,14 +210,17 @@ bash setup.sh
 ```
 
 The setup script:
-1. Checks Node.js 20+ (required)
+1. Checks Node.js 20+ (required) and python3 (warns if missing)
 2. Detects installed AI CLIs (warns if none found, does not block)
 3. Installs all npm dependencies (monorepo workspaces)
-4. Generates `~/.hive/token` and `~/.hive/viewer-token`
-5. Compiles the `send-return` Swift binary for auto-pilot (skipped if `swiftc` not available)
+4. Compiles the `send-return` Swift binary for auto-pilot and dashboard message delivery (skipped if `swiftc` not available)
+5. Generates `~/.hive/token` and `~/.hive/viewer-token`
 6. Installs or updates Claude Code hooks if Claude is present
-7. Creates `.env` from the template
-8. Prints your auth token
+7. Prints your auth token
+
+No root `.env` file is created. Nothing loads one; the daemon and scripts read configuration from the process environment (see `.env.example` for the variables that exist).
+
+**Auto-approve hook consent.** The machine-wide PreToolUse auto-approve hook is consent-gated. Interactive installs explain what it does and ask Y/n. Non-interactive installs still install it (unattended automation depends on it) but print a loud notice. Control it with `--auto-approve` / `--no-auto-approve` on `install.sh`, `setup.sh`, or `setup-hooks.sh`, or with `HIVE_AUTO_APPROVE=1|0` in the environment. Remove it later with `bash setup-hooks.sh --no-auto-approve`. The `--connect` satellite flow always installs it and prints the notice instead of prompting.
 
 ### Accessibility Permission (optional, for auto-pilot)
 
@@ -220,7 +229,7 @@ If `swiftc` was available, setup compiles `~/send-return` and automatically open
 1. **Drag** `send-return` from the Finder window into the Accessibility list
 2. **Toggle it on**
 
-That's it. Without this, agents pause on permission prompts until you approve manually. Everything else works fine.
+That's it. Without this, agents pause on permission prompts until you approve manually, and messages sent from the dashboard cannot press Enter to submit. Everything else works fine.
 
 ## Running
 
@@ -232,6 +241,8 @@ npm run launch
 ```
 
 This starts the local daemon on `3001/3002`, opens the current public tunnel for the WebSocket server, deploys or updates the dashboard to your own Vercel account, opens the hosted dashboard URL, and keeps the daemon and tunnel running in one terminal. If ngrok is installed and healthy, Hive prefers it. Otherwise it falls back to cloudflared. On a new machine, run `npx vercel login` once first.
+
+On macOS, `bash scripts/install.sh --fresh` also installs a `com.hive.daemon` LaunchAgent (KeepAlive + RunAtLoad), so the primary daemon auto-starts at login and restarts if it dies. You do not need to keep a terminal window open. To stop it: `launchctl bootout gui/$(id -u)/com.hive.daemon`, then kill the listener on port 3001 if one is still running.
 
 **Local-only fallback**
 ```bash
@@ -298,12 +309,16 @@ npm run desktop:smoke
 npm run desktop:dev
 ```
 
-This desktop wrapper keeps `apps/daemon` and `apps/dashboard` intact. It stages the compiled daemon, a local static dashboard export, a bundled Node runtime, and a native onboarding shell into a Tauri app. `desktop:smoke` boots the wrapper on isolated ports with a temp HOME so QA can verify the desktop path without touching the live 3001/3002 daemon. Use `npm run desktop:build` to produce a DMG-capable desktop build once Rust and macOS signing prerequisites are installed.
+This desktop wrapper keeps `apps/daemon` and `apps/dashboard` intact. It stages the compiled daemon, a local static dashboard export, a bundled Node runtime, and a native onboarding shell into a Tauri app. `desktop:prepare` cleans `apps/daemon/dist` before building, so desktop staging is always a full daemon rebuild. `desktop:smoke` boots the wrapper on isolated ports with a temp HOME and verifies the staged daemon accepts an authenticated REST call and a WebSocket connection, not just the launcher static server. `desktop:dev` starts the Vite dev server itself via Tauri's `beforeDevCommand`; do not run Vite manually first, or the strict-port 1420 conflict aborts `tauri dev`. Use `npm run desktop:build` to produce a DMG-capable desktop build once Rust and macOS signing prerequisites are installed.
+
+On first launch the desktop app compiles `~/send-return` automatically when the Xcode Command Line Tools are present (and shows an in-app note plus a log warning when they are not), so desktop users do not need to run `setup.sh` for it. The launcher's `/bootstrap` page on `127.0.0.1:3310` never discloses the admin token to unauthenticated callers: it requires the per-launch secret minted by the app shell (or an explicit `?token=`) and returns 403 otherwise. Its `/health` endpoint includes a `sendReturnReady` field.
 
 Builder prerequisites for the desktop path:
 - Rust toolchain (`rustup`)
 - Xcode Command Line Tools
 - Apple Developer signing + notarization secrets if you want signed public DMGs from GitHub Actions
+
+GitHub draft releases are created only from `desktop-v*` tags. Running the release workflow via `workflow_dispatch` performs a verification build with no release.
 
 ## What It Does
 
@@ -321,13 +336,12 @@ The system solves four problems at once:
 
 - **Stoplight dashboard** -green/red/yellow at a glance. Open on your phone, tablet, or second monitor. Supports 1-8 agents per machine.
 - **Multi-model** -Claude, Codex, OpenClaw side by side. Spawn any from the dashboard. Add custom agents via `~/.hive/agents.json`.
-- **Multi-machine** -connect additional Macs as satellites. Agents from all machines appear in one dashboard. Messages, tasks, and coordination route transparently across the network.
+- **Multi-machine** -connect additional Macs, Windows PCs, or Linux machines as satellites. Agents from all machines appear in one dashboard. Messages, tasks, and coordination route transparently across the network.
 - **Auto-discovery** -start any supported agent in a terminal and it appears on the dashboard within 3 seconds. No registration, no config.
 - **Spawn approval gate** -every new agent requires a dashboard "Approve" click before receiving its task. You see what is about to start and you control when it begins.
-- **Auto-pilot** -permission prompts auto-approve after a 3-second grace window. Three failures escalate to a yellow card the autopilot will not touch.
-- **Auto-update cascade** -when code is pushed, the primary rebuilds and all satellites auto-pull, rebuild, and restart. Fleet stays in sync without manual intervention.
-- **Pipeline health check** -`GET /api/check` verifies the entire fleet: daemon, build, auth, discovery, workers, hooks, status accuracy, satellite versions. One call, pass or fail.
-- **Diagnostics panel** -"Health" button on the dashboard shows fleet checks, stuck worker details, session routing, hook times, and signal timelines. Debug from your phone.
+- **Auto-pilot** -permission prompts auto-approve after a 3-second grace window. Genuine permission prompts and questions surface as a yellow card for the human, with quick-reply buttons on the tile so you can answer before auto-pilot does.
+- **Auto-update cascade** -when code is pushed, the primary rebuilds and all satellites auto-pull, validate (npm install + typecheck), and restart. A failed update rolls back to the pre-pull commit; repeated failures back off exponentially. Fleet stays in sync without manual intervention.
+- **Pipeline health check** -`GET /api/check` verifies the entire fleet: daemon, build, auth, discovery, workers, hooks, status accuracy, satellite versions. One call, pass or fail. This is the supported health surface (the dashboard has no health button).
 - **Messaging** -tap any tile, type a message, it goes straight to that agent's terminal. Messages queue if the agent is busy.
 - **Coordination** -file locks, conflict detection, task queue, scratchpad. Multiple agents on the same codebase without collisions.
 - **Workflow handoff** -tag related tasks with a workflow ID. When step 1 finishes, step 2 receives the git diff, verbatim agent output, and a structured JSON context block. Git state is verified before each handoff to prevent stale-code drift. Warnings flag uncommitted files or merge conflicts before the next step starts.
@@ -350,7 +364,7 @@ The system solves four problems at once:
 ## How It Works
 
 ### Auto-Discovery
-Detects Claude, Codex, and OpenClaw processes within 3 seconds via `ps` + `lsof`. No configuration needed. Start `claude`, `codex`, or `openclaw tui` in any terminal and the daemon finds it. Supports up to 8 agents simultaneously. The daemon reads the vertical position of each Terminal window on your screen every 10 seconds and assigns slots to match. Move a terminal higher on screen, it moves up in the dashboard stack. Tab titles update automatically to show which slot each terminal is.
+Detects Claude, Codex, and OpenClaw processes within 3 seconds via `ps` + `lsof`. No configuration needed. Start `claude`, `codex`, or `openclaw tui` in any terminal and the daemon finds it. Supports up to 8 agents simultaneously. The daemon reads the vertical position of each Terminal window on your screen every few seconds (a 1.5-second throttle inside the 3-second tick) and assigns slots to match. Move a terminal higher on screen, it moves up in the dashboard stack. Tab titles update automatically to show which slot each terminal is. On Windows, position tracking works for separate-window (cmd.exe) installs; with Windows Terminal tabs, only the first agent per window reports a position. Windows agents whose working directory cannot be derived are attributed to your home directory, never to the Node install directory.
 
 ### Status Tracking
 Multi-layer detection pipeline determines real-time status:
@@ -358,6 +372,8 @@ Multi-layer detection pipeline determines real-time status:
 2. **JSONL analysis** -reads the agent's conversation log for recent activity, extracts the last user message as a direction summary (Claude and Codex)
 3. **CPU signal** -falls back to CPU usage (>8% = working) when hooks are delayed (all agents)
 4. **PTY output** -detects terminal output flow for agents actively generating text
+
+Tile labels classify common commands: `tsc --noEmit` runs show as "Type-checking" rather than "Building project".
 
 ### Control Modes
 Hive controls agents through two deliberate paths:
@@ -368,7 +384,7 @@ Hive controls agents through two deliberate paths:
 Both paths feed the same queue, locks, scratchpad, workflow handoffs, and dashboard state. The Terminal automation layer exists because Hive works with real pre-existing terminal sessions, not because the daemon lacks a cleaner control model.
 
 ### Auto-Pilot
-Auto-approves permission prompts so agents never sit idle waiting for you. The daemon detects when an agent is stuck on a prompt, waits a 3-second grace window (so you can override from the dashboard), then sends a Return keystroke via the `send-return` binary.
+Auto-approves permission prompts so agents never sit idle waiting for you. The daemon detects when an agent is stuck on a prompt, waits a 3-second grace window (so you can override from the dashboard), then sends a Return keystroke via the `send-return` binary. While the agent is stuck, the tile goes yellow and shows quick-reply buttons, so genuine questions reach the human and you can answer before auto-pilot does.
 
 This is how you run agents unattended. You give them tasks and walk away. Auto-pilot keeps them moving.
 
@@ -400,7 +416,7 @@ Agent 2 receives: "Previous step completed by Q3: created src/api/users.ts, crea
 Every solved problem gets written to a per-project knowledge file (`.claude/hive-learnings.md`). The next agent that works on that project reads it before starting. Every debugging session, every style correction, every architectural decision compounds. After months of running, the system knows things about your projects that no fresh agent could replicate.
 
 ### State Persistence
-The daemon writes `~/.hive/daemon-state.json` every 30 seconds and on shutdown. If the daemon restarts, it rehydrates workers, message queues, locks, and workflow handoffs from the snapshot (discarded if older than 10 minutes). Discovery reconciles actual processes within 3 seconds. You do not configure this. It just works.
+The daemon writes `~/.hive/daemon-state.json` every 30 seconds and on shutdown. If the daemon restarts, it rehydrates workers (including each worker's model), message queues, locks, and workflow handoffs from the snapshot (discarded if older than 10 minutes). The `quadrantAssignments` field in the snapshot is debug-only and never restored. Discovery reconciles actual processes within 3 seconds. You do not configure this. It just works.
 
 ### Session Routing (Restart Resilience)
 When you open 4 terminals within seconds of each other, their session log files are created nearly simultaneously. The daemon needs to know which log file belongs to which terminal. It solves this with marker files for Claude and rollout-log matching for Codex:
@@ -415,7 +431,7 @@ On a fresh computer restart, the old marker files are overwritten the moment you
 Two channels, zero setup:
 
 - **macOS desktop** -when an agent goes stuck (yellow), a native notification fires with the agent name, project, and what it needs. 60-second cooldown per agent.
-- **Web Push (iOS/Android/desktop browser)** -when an agent finishes work (green to red), a push notification is sent to all subscribed devices. 15-second cooldown per agent. The dashboard is a PWA. Add it to your Home Screen, tap the bell icon in the header, and allow notifications. VAPID keys are auto-generated on first daemon start (`~/.hive/vapid.json`). Subscriptions persist across daemon restarts (`~/.hive/push-subs.json`).
+- **Web Push (iOS/Android/desktop browser)** -when an agent finishes work (green to red), a push notification is sent to all subscribed devices. 15-second cooldown per agent. Completion pushes also fire for satellite agents dispatched via the REST API, task queue, outbox, or queued messages (dashboard chat sends to satellites do not trigger one yet). The dashboard is a PWA. Add it to your Home Screen, tap the bell icon in the header, and allow notifications. VAPID keys are auto-generated on first daemon start (`~/.hive/vapid.json`, mode 600). A corrupt `vapid.json` no longer crash-loops the daemon: keys regenerate automatically, or push is disabled for the run. Subscriptions persist across daemon restarts (`~/.hive/push-subs.json`, mode 600).
 
 Configure at `~/.hive/notifications.json`. Set `pushOnComplete: false` to disable completion notifications. Defaults work out of the box.
 
@@ -429,6 +445,7 @@ All endpoints require the auth token from `~/.hive/token` via the `Authorization
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/workers` | List all agents with status, TTY, project, current action |
+| `GET` | `/api/context` | Context snapshots for agents. `?workerId=X` for one (relayed to satellites), `?workerIds=a,b` for several, `?history=1&historyLimit=6` to include recent conversation turns (limit clamped 1-12). |
 
 ### Messaging
 | Method | Endpoint | Body | Description |
@@ -444,6 +461,9 @@ All endpoints require the auth token from `~/.hive/token` via the `Authorization
 | `POST` | `/api/spawn` | `{project?, model?, task?, targetQuadrant?, machine?}` | Spawn an agent on the local machine or a connected satellite. |
 | `POST` | `/api/kill` | `{workerId}` | Kill a local or remote worker. |
 | `POST` | `/api/satellites/repair` | `{machine, action?}` | Ask a connected satellite to `update`, `repair`, or `reinstall` itself. |
+| `POST` | `/api/update-satellites` | | Tell all connected satellites to pull, validate, and restart (admin only). |
+| `POST` | `/api/rearrange` | | Force a terminal window rearrange on the primary (admin only). |
+| `GET` | `/api/models` | | List spawnable agent models (built-in plus custom agents from `~/.hive/agents.json`). |
 | `GET` | `/api/projects` | | List projects merged across all machines. |
 | `GET` | `/api/capabilities` | | List auto-detected machine capabilities and per-machine project paths. |
 | `GET` | `/api/control-plane-audit` | `?limit=100` (optional) | Read the append-only control-plane audit log for exec, spawn, kill, and maintenance actions. |
@@ -452,7 +472,7 @@ All endpoints require the auth token from `~/.hive/token` via the `Authorization
 | Method | Endpoint | Body | Description |
 |--------|----------|------|-------------|
 | `GET` | `/api/queue` | | View all queued tasks |
-| `POST` | `/api/queue` | `{task, project?, priority?, blockedBy?, workflowId?, requires?, preferMachine?, model?}` | Push a task. Auto-dispatched to next idle agent. Add `workflowId` to link related tasks for automatic handoff. Add `requires` for capability routing (see below). Add `model` to target a specific agent type. |
+| `POST` | `/api/queue` | `{task, project?, priority?, blockedBy?, workflowId?, requires?, preferMachine?, model?}` | Push a task. Auto-dispatched to next idle agent. Add `workflowId` to link related tasks for automatic handoff. Add `requires` for capability routing (see below). Add `model` to target a specific agent type. Returns 400 for an invalid `task`, `project`, `model`, `preferMachine`, `blockedBy`, or `workflowId`, matching the spawn/exec validation. |
 | `DELETE` | `/api/queue/:id` | | Remove a queued task |
 
 **Capability routing:** Tasks can target specific machines or agent types:
@@ -504,7 +524,8 @@ Satellites auto-detect their capabilities on startup and report them to the prim
 ### Learning & Artifacts
 | Method | Endpoint | Body / Query | Description |
 |--------|----------|--------------|-------------|
-| `POST` | `/api/learning` | `{project, lesson}` | Persist a lesson to the project's learning file |
+| `POST` | `/api/learning` | `{project, lesson}` | Persist a lesson to the project's learning file. `project` must be an absolute path, a `~/` path, or a project name known to project discovery; unknown relative names return 400. |
+| `GET` | `/api/learnings` | `?q=keyword&project=X&limit=5` | Search learnings by keyword across projects. Omit `q` for the latest entries. `limit` is clamped 1-20. |
 | `GET` | `/api/artifacts` | `?workerId=X` (optional) | Recent file changes by an agent |
 
 ### Review Queue
@@ -518,12 +539,37 @@ Satellites auto-detect their capabilities on startup and report them to the prim
 
 The daemon also auto-detects `git push`, `gh pr create`, and Vercel deploys from hook events and creates review items automatically. Agents can self-report with richer summaries via the POST endpoint.
 
+### Users (Multiplayer)
+| Method | Endpoint | Body | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/users` | | List all users, no tokens in the response (admin only) |
+| `POST` | `/api/users` | `{name, role}` | Create a user, returns their token. Roles: `admin`, `operator`, `viewer`, `voice` (admin only) |
+| `DELETE` | `/api/users/:id` | | Remove a user (admin only) |
+
+### Reverts
+| Method | Endpoint | Body | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/reverts` | | List revert history entries (commits eligible for rollback) |
+| `POST` | `/api/revert` | `{id, confirmation}` | Roll a project back to a recorded commit (admin only). `confirmation` must be the exact commit hash; refuses if the working tree is dirty. |
+
+### Replays
+| Method | Endpoint | Body | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/replays` | `{name?}` | Start recording a session replay (admin only) |
+| `POST` | `/api/replays/:id/stop` | | Stop a recording (admin only) |
+| `GET` | `/api/replays` | | List recordings, including ones from before the last daemon restart (names from prior runs are reconstructed as "Replay \<ISO timestamp\>"; original custom names are not recovered) |
+| `GET` | `/api/replays/:id` | | Download a recording as JSONL |
+
 ### Diagnostics
 | Method | Endpoint | Query | Description |
 |--------|----------|-------|-------------|
+| `GET` | `/api/health` | | Daemon health snapshot |
+| `GET` | `/api/check` | | Full pipeline verification across the fleet: daemon, auth, discovery, workers, hooks, satellite versions |
 | `GET` | `/api/audit` | `?tty=X` (optional) | Status change audit log |
 | `GET` | `/api/signals` | `?workerId=X` (optional) | Raw signal data (hooks, CPU, JSONL) |
 | `GET` | `/api/debug` | | Full daemon state dump |
+| `GET` | `/api/notifications/config` | | Read the notification config (`~/.hive/notifications.json` or defaults) |
+| `GET` | `/api/collector/*` | | Collector telemetry: `events`, `conflicts`, `complications`, `score`, `summary`. Collector JSONL files rotate at 10MB (one `.1` generation kept); reads are capped at the last 2MB and summary counts cover the current file only. |
 
 ### Example: Send a task to an idle agent
 
@@ -624,13 +670,20 @@ The daemon watches this file and reloads when it changes. No restart needed.
 
 ## Configuration
 
-### Environment Variables (.env)
+### Environment Variables
+
+Nothing loads a root `.env` file. The daemon and scripts read these from the process environment (your shell, a launchd/systemd service definition, or the command line). See `.env.example` for the full annotated list.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HIVE_PROJECT` | Auto-detected | Path to the Hive project root |
-| `SEND_RETURN_BIN` | `~/send-return` | Path to the CGEvent binary for auto-pilot |
-| `NEXT_PUBLIC_WS_URL` | `ws://localhost:3002` | WebSocket URL the dashboard connects to |
+| `SEND_RETURN_BIN` | `~/send-return` | Path to the CGEvent binary for auto-pilot and dashboard message delivery |
+| `HIVE_HOME` | `$HOME` | Overrides HOME for `~/.hive` resolution (used by tests and the control-plane audit log) |
+| `ANTHROPIC_API_KEY` | unset | Enables AI suggestions (or put the key in `~/.hive/anthropic-key`) |
+| `HIVE_DAEMON_URL` | `http://localhost:3001` | Daemon endpoint baked into Claude hooks by `setup-hooks.sh` |
+| `HIVE_AUTO_APPROVE` | unset | `1` installs the machine-wide auto-approve hook, `0` skips/removes it |
+| `HIVE_PRIMARY_URL` / `HIVE_PRIMARY_TOKEN` | unset | Non-interactive satellite connect for `install.sh` |
+| `NEXT_PUBLIC_WS_URL` | unset | WebSocket URL baked into the dashboard at build time (`deploy-vercel.sh` sets it from the tunnel URL). Static/desktop builds work without it: served from localhost or Tauri, the dashboard resolves `ws://127.0.0.1:3002` at runtime. |
+| `HIVE_CLEAR_REPO_HOMEPAGE` | unset | Maintainer-only: `1` lets `deploy-vercel.sh` clear the GitHub repo homepage on the origin remote |
 
 ### Claude Code Hooks
 
@@ -685,6 +738,10 @@ Dashboard (Next.js, port 3000 -installable as PWA)
 | `apps/daemon/src/state-store.ts` | Snapshot persistence across restarts |
 | `~/.hive/identity.sh` | Claude hook: injects slot ID + peer summary on every prompt |
 | `~/.hive/sessions/` | Claude TTY→session marker files written by `identity.sh` |
+| `~/.hive/machine-id` | Persistent machine identity (hostname + 4-char random suffix, generated once) |
+| `~/.hive/update-state.json` | Satellite auto-update backoff state (delete to force an immediate retry) |
+| `~/.hive/primary-urls-history.txt` | Every primary URL a satellite has learned (last 20) |
+| `~/.hive/logs/satellite.*.log` | Satellite stdout/stderr logs |
 | `apps/daemon/src/notifications.ts` | macOS push notifications on stuck |
 | `apps/daemon/src/task-queue.ts` | Global task queue |
 | `apps/daemon/src/lock-manager.ts` | File lock coordination |
