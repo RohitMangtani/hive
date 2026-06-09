@@ -1,5 +1,13 @@
-import { basename } from "path";
 import { readFileSync } from "fs";
+
+const COLLISION_PRONE_FILENAMES = new Set([
+  "index.ts",
+  "index.tsx",
+  "layout.tsx",
+  "page.tsx",
+  "route.ts",
+  "route.tsx",
+]);
 
 /**
  * Truncate a string to a maximum length, appending "..." if truncated.
@@ -52,7 +60,7 @@ export function describeAction(
   if (!toolInput) return `Using ${toolName}`;
 
   const filePath = toolInput.file_path as string | undefined;
-  const fileName = filePath ? basename(filePath) : undefined;
+  const fileName = filePath ? describeFilePath(filePath) : undefined;
 
   switch (toolName) {
     case "Bash":
@@ -97,4 +105,13 @@ export function describeAction(
     default:
       return toolName.replace(/^mcp__\w+__/, "");
   }
+}
+
+function describeFilePath(filePath: string): string {
+  const parts = filePath.split(/[\\/]+/).filter(Boolean);
+  const fileName = parts[parts.length - 1] || filePath;
+  if (!COLLISION_PRONE_FILENAMES.has(fileName) || parts.length < 2) {
+    return fileName;
+  }
+  return parts.slice(-2).join("/");
 }

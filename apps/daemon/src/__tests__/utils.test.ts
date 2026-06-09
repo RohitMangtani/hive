@@ -21,7 +21,20 @@ describe("describeAction", () => {
 
   it("describes Edit tool with file path", () => {
     const result = describeAction("Edit", { file_path: "/src/app/page.tsx" });
-    expect(result).toBe("Editing page.tsx");
+    expect(result).toBe("Editing app/page.tsx");
+  });
+
+  it("includes parent directory for repeated Next.js route filenames", () => {
+    const about = describeAction("Edit", {
+      file_path: "/repo/app/about/page.tsx",
+    });
+    const leaderboard = describeAction("Edit", {
+      file_path: "/repo/app/leaderboard/page.tsx",
+    });
+
+    expect(about).toBe("Editing about/page.tsx");
+    expect(leaderboard).toBe("Editing leaderboard/page.tsx");
+    expect(about).not.toBe(leaderboard);
   });
 
   it("describes Write tool", () => {
