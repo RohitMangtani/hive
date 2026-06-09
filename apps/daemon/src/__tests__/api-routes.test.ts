@@ -2,6 +2,7 @@ import express from "express";
 import { createServer } from "http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerApiRoutes } from "../api-routes.js";
+import type { HiveUser } from "../user-registry.js";
 
 interface Harness {
   baseUrl: string;
@@ -11,6 +12,7 @@ interface Harness {
 
 async function createHarness(options?: {
   requireAuth?: Parameters<typeof registerApiRoutes>[1];
+  role?: HiveUser["role"];
 }): Promise<Harness> {
   const app = express();
   app.use(express.json());
@@ -83,12 +85,46 @@ async function createHarness(options?: {
 
   const procMgr = {} as never;
   const discovery = { getAuditLog: vi.fn(() => []) } as never;
+  // Inert stubs: the real UserRegistry/ReplayManager/RevertHistory constructors
+  // read and create state under ~/.hive, which tests must never touch.
+  const userRegistry = {
+    getAll: vi.fn(() => []),
+    createUser: vi.fn(),
+    removeUser: vi.fn(() => false),
+  } as never;
+  const replayManager = {
+    start: vi.fn(),
+    stop: vi.fn(() => null),
+    list: vi.fn(() => []),
+    read: vi.fn(() => null),
+  } as never;
+  const revertHistory = {
+    list: vi.fn(() => []),
+    get: vi.fn(() => undefined),
+  } as never;
+
+  // Default auth stub authenticates as an admin so requireAdmin-gated routes
+  // are reachable; pass role to exercise the non-admin 403 path.
+  const defaultAuth: Parameters<typeof registerApiRoutes>[1] = (req, _res, next) => {
+    (req as typeof req & { hiveUser?: HiveUser }).hiveUser = {
+      id: "test-user",
+      name: "Test User",
+      role: options?.role ?? "admin",
+      token: "test-token",
+      createdAt: 0,
+    };
+    next();
+  };
+
   registerApiRoutes(
     app,
-    options?.requireAuth || ((_req, _res, next) => next()),
+    options?.requireAuth || defaultAuth,
     receiver as never,
     procMgr,
     discovery,
+    userRegistry,
+    replayManager,
+    revertHistory,
   );
 
   // Use http.createServer so we get a proper 'error' event on bind failure
@@ -129,8 +165,8 @@ describe("registerApiRoutes", () => {
     const projectsRes = await fetch(`${harness.baseUrl}/api/projects`);
     const capabilitiesRes = await fetch(`${harness.baseUrl}/api/capabilities`);
 
-    expect(await projectsRes.json()).toEqual(harness.receiver.getSwarmProjects());
-    expect(await capabilitiesRes.json()).toEqual(harness.receiver.getSwarmCapabilities());
+    expect(await projectsRes.json()).toEqual((harness.receiver.getSwarmProjects as () => unknown)());
+    expect(await capabilitiesRes.json()).toEqual((harness.receiver.getSwarmCapabilities as () => unknown)());
   });
 
   it("routes spawn and kill requests through the swarm control plane", async () => {
@@ -248,6 +284,31 @@ describe("registerApiRoutes", () => {
     expect(await killRes.json()).toEqual({ error: "Unauthorized" });
     expect(harness.receiver.execViaSwarm).not.toHaveBeenCalled();
     expect(harness.receiver.killViaSwarm).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 on privileged routes for authenticated non-admin users, before input validation", async () => {
+    const harness = await createHarness({ role: "operator" });
+    harnesses.push(harness);
+
+    // Malformed model on purpose: auth-first ordering means non-admins get
+    // 403, never the 400 validation detail.
+    const spawnRes = await fetch(`${harness.baseUrl}/api/spawn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: "hive", model: "claude;rm" }),
+    });
+    const execRes = await fetch(`${harness.baseUrl}/api/exec`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: "pwd" }),
+    });
+
+    expect(spawnRes.status).toBe(403);
+    expect(await spawnRes.json()).toEqual({ error: "Admin access required" });
+    expect(execRes.status).toBe(403);
+    expect(await execRes.json()).toEqual({ error: "Admin access required" });
+    expect(harness.receiver.spawnViaSwarm).not.toHaveBeenCalled();
+    expect(harness.receiver.execViaSwarm).not.toHaveBeenCalled();
   });
 
   it("rejects malformed privileged control-plane inputs before touching the swarm handlers", async () => {

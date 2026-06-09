@@ -23,17 +23,30 @@ jobs:
       - name: Typecheck daemon
         run: npx tsc --noEmit -p apps/daemon/tsconfig.json
 
+      - name: Typecheck daemon tests
+        run: npx tsc --noEmit -p apps/daemon/tsconfig.test.json
+
       - name: Typecheck dashboard
         run: npx tsc --noEmit -p apps/dashboard/tsconfig.json
 
-      - name: Test daemon
-        run: npm -w apps/daemon run test
+      - name: Lint scripts
+        run: |
+          set -euo pipefail
+          for f in scripts/*.sh apps/daemon/scripts/*.sh apps/daemon/src/hooks/*.sh; do
+            bash -n "$f"
+          done
+          node --check packages/cli/bin/hive.js
 
+      # Builds run before tests so build breakage is surfaced even while a
+      # test is red (sequential steps skip everything after the first failure).
       - name: Build daemon
         run: npm -w apps/daemon run build
 
       - name: Build dashboard
         run: npm -w apps/dashboard run build
+
+      - name: Test daemon
+        run: npm -w apps/daemon run test
 
   desktop-smoke:
     runs-on: macos-latest

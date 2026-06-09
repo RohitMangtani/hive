@@ -13,11 +13,16 @@ import type { WorkerState } from "../types.js";
 // Mock fs operations (telemetry writes workers.json, learnings, etc.)
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
+  const { join, sep } = await import("path");
+  const { homedir } = await import("os");
   return {
     ...actual,
     existsSync: vi.fn((p: string) => {
-      // Allow real reads for test fixtures, block ~/.hive writes
-      if (typeof p === "string" && p.includes(".hive")) return false;
+      // Allow real reads for test fixtures, block ~/.hive reads. Match on the
+      // HOME-prefixed path, not a bare ".hive" substring, so checkouts whose
+      // path happens to contain ".hive" still read fixtures correctly.
+      const hiveDir = join(process.env.HOME || homedir(), ".hive");
+      if (typeof p === "string" && (p === hiveDir || p.startsWith(hiveDir + sep))) return false;
       return actual.existsSync(p);
     }),
     mkdirSync: vi.fn(),
