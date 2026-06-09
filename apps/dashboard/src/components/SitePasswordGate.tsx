@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, ReactNode } from 'react';
+import { isValidWsUrl } from '@/lib/ws-url';
 
 const TOKEN_KEY = 'hive_token';
 const MODE_KEY = 'hive_mode'; // "admin" | "viewer"
@@ -9,21 +10,6 @@ const DAEMON_URL_KEY = 'hive_daemon_url';
 /** Validate token is a 64-char hex string (admin) or 64-char hex (viewer SHA256). */
 function isValidTokenFormat(token: string): boolean {
   return /^[0-9a-f]{64}$/i.test(token);
-}
-
-/** Validate WS URL against expected patterns (wss:// with known TLD or localhost). */
-function isValidWsUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") return false;
-    const host = parsed.hostname;
-    // Allow localhost, 127.0.0.1, *.ngrok-free.dev, *.trycloudflare.com, *.vercel.app
-    return host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0"
-      || host.endsWith(".ngrok-free.dev") || host.endsWith(".ngrok.io")
-      || host.endsWith(".trycloudflare.com") || host.endsWith(".vercel.app");
-  } catch {
-    return false;
-  }
 }
 
 interface SitePasswordGateProps {

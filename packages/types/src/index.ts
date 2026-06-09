@@ -17,6 +17,12 @@ export interface WorkerArtifact {
   ts: number;
 }
 
+/** Available agent type for the spawn dialog (sent by daemon over WS as type:"models"). */
+export interface AgentModel {
+  id: string;
+  label: string;
+}
+
 export interface UploadedFileRef {
   id: string;
   name: string;
@@ -220,6 +226,12 @@ export interface DaemonMessage {
   revertId?: string;
   /** Revert: confirmation hash typed by user. */
   revertConfirmation?: string;
+  /** Message: worker IDs whose context snapshots should be attached. */
+  contextWorkerIds?: string[];
+  /** Message: include the sender's own context snapshot. */
+  includeSenderContext?: boolean;
+  /** Message: originating worker ID for worker-to-worker sends. */
+  from?: string;
 }
 
 export interface ChatEntry {
@@ -260,11 +272,13 @@ export interface RevertHistoryEntry {
 }
 
 export interface DaemonResponse {
-  type: "workers" | "worker_update" | "worker_removed" | "chat" | "chat_history" | "orchestrator" | "error" | "queued" | "auth" | "reviews" | "review_added" | "vapid_key" | "push_status" | "machines" | "worker_context" | "upload_result" | "presence" | "activity" | "user_list" | "user_created" | "user_removed" | "reverts" | "revert_result" | "devices" | "device_event";
+  type: "workers" | "worker_update" | "worker_removed" | "chat" | "chat_history" | "orchestrator" | "error" | "auth" | "reviews" | "review_added" | "vapid_key" | "push_status" | "models" | "machines" | "worker_context" | "upload_result" | "presence" | "activity" | "user_list" | "user_created" | "user_removed" | "reverts" | "revert_result" | "devices" | "device_event";
   workers?: WorkerState[];
   worker?: WorkerState;
   /** Connected satellite machines (for spawn dialog machine picker). */
   machines?: ConnectedMachine[];
+  /** Available agent models (for spawn dialog model picker). */
+  models?: AgentModel[];
   workerId?: string;
   content?: string;
   messages?: ChatEntry[];

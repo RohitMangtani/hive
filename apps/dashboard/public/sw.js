@@ -1,5 +1,20 @@
-const CACHE = "hive-v1";
+// Bump SW_VERSION when shipping shell/protocol changes: activate drops every
+// other cache, and the runtime cache is bounded below so hashed _next/static
+// assets from old deploys cannot accumulate forever.
+const SW_VERSION = "v2";
+const CACHE = `hive-${SW_VERSION}`;
+const MAX_RUNTIME_ENTRIES = 64;
 const SHELL = ["/", "/manifest.json", "/icon-192.png"];
+
+async function putBounded(request, response) {
+  const c = await caches.open(CACHE);
+  await c.put(request, response);
+  const keys = await c.keys();
+  if (keys.length > MAX_RUNTIME_ENTRIES) {
+    // cache.keys() preserves insertion order, so this prunes oldest-first
+    await Promise.all(keys.slice(0, keys.length - MAX_RUNTIME_ENTRIES).map((k) => c.delete(k)));
+  }
+}
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
@@ -24,11 +39,20 @@ self.addEventListener("fetch", (e) => {
       .then((res) => {
         if (res.ok && url.origin === self.location.origin) {
           const clone = res.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, clone));
+          putBounded(e.request, clone);
         }
         return res;
       })
-      .catch(() => caches.match(e.request))
+      .catch(async () => {
+        const cached = await caches.match(e.request);
+        if (cached) return cached;
+        if (e.request.mode === "navigate") {
+          const shell = await caches.match("/");
+          if (shell) return shell;
+        }
+        // Clean network error instead of respondWith(undefined) TypeError
+        return Response.error();
+      })
   );
 });
 

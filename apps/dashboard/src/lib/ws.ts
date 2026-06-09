@@ -2,17 +2,30 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentModel, ChatEntry, ConnectedMachine, DaemonMessage, DaemonResponse, DeviceEvent, HiveUser, RegisteredDevice, ReviewItem, UploadedFileRef, WorkerContextSnapshot, WorkerState } from "@/lib/types";
-
-/** Extended response type for message types beyond the base DaemonResponse union */
-type ExtendedResponse = DaemonResponse
-  | { type: "models"; models?: AgentModel[] }
-  | { type: "vapid_key"; vapidKey?: string }
-  | { type: "push_status"; subscribed?: boolean }
-  | { type: "user_list"; users?: unknown[] }
-  | { type: "user_created"; user?: unknown }
-  | { type: "user_removed"; userId?: string; ok?: boolean };
+import { resolveDaemonUrl } from "@/lib/ws-url";
 
 const MAX_CHAT_ENTRIES = 150;
+
+/** Frames safe to queue while disconnected and flush on reopen: idempotent
+ *  reads/control state. One-shot actions (message, spawn, kill, revert,
+ *  user_create, ...) are never queued -- late delivery could double-send text
+ *  into live terminals or hit recycled worker IDs after a restart. */
+const QUEUEABLE_TYPES = new Set<DaemonMessage["type"]>([
+  "subscribe",
+  "unsubscribe",
+  "list",
+  "list_devices",
+  "list_reverts",
+  "user_list",
+  "worker_context",
+  "review_seen",
+  "review_dismiss",
+  "review_seen_all",
+  "review_clear_all",
+  "push_subscribe",
+  "push_unsubscribe",
+]);
+const MAX_PENDING_MESSAGES = 50;
 
 /** Normalize text for comparison  --  matches tty-input.ts cleaning */
 const norm = (s: string) => s.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
@@ -73,8 +86,15 @@ export function useHive(daemonUrl: string) {
         ws.send(JSON.stringify(msg));
         return true;
       }
-      pendingMessagesRef.current.push(msg);
-      return true;
+      if (QUEUEABLE_TYPES.has(msg.type)) {
+        pendingMessagesRef.current.push(msg);
+        if (pendingMessagesRef.current.length > MAX_PENDING_MESSAGES) {
+          pendingMessagesRef.current.splice(0, pendingMessagesRef.current.length - MAX_PENDING_MESSAGES);
+        }
+      }
+      // Honest delivery: nothing reached the daemon yet, so report failure.
+      // Queued control frames still flush on reopen; callers ignore their return.
+      return false;
     },
     [flushPendingMessages]
   );
@@ -121,14 +141,23 @@ export function useHive(daemonUrl: string) {
 
   // Reviews are sent over WS on connect (no REST needed  --  tunnel only exposes WS port)
 
+  // Runtime URL resolution: ?ws= param > stored value > env-baked prop >
+  // same-host default (loopback/tauri only). Keeps static/desktop builds
+  // working when NEXT_PUBLIC_WS_URL was baked empty, without letting a
+  // hosted dashboard fall back to a visitor's own localhost.
+  const [resolvedUrl, setResolvedUrl] = useState("");
   useEffect(() => {
-    if (!daemonUrl) return;
+    setResolvedUrl(resolveDaemonUrl(daemonUrl));
+  }, [daemonUrl, connectEpoch]);
+
+  useEffect(() => {
+    if (!resolvedUrl) return;
 
     function connect() {
       // Append auth token as query param for server-side validation
       const token = localStorage.getItem("hive_token") || "";
-      const sep = daemonUrl.includes("?") ? "&" : "?";
-      const authedUrl = token ? `${daemonUrl}${sep}token=${encodeURIComponent(token)}` : daemonUrl;
+      const sep = resolvedUrl.includes("?") ? "&" : "?";
+      const authedUrl = token ? `${resolvedUrl}${sep}token=${encodeURIComponent(token)}` : resolvedUrl;
 
       const ws = new WebSocket(authedUrl);
       wsRef.current = ws;
@@ -146,7 +175,7 @@ export function useHive(daemonUrl: string) {
       };
 
       ws.onmessage = (event) => {
-        let data: ExtendedResponse;
+        let data: DaemonResponse;
         try {
           data = JSON.parse(event.data);
         } catch {
@@ -438,8 +467,16 @@ export function useHive(daemonUrl: string) {
           }
 
           case "orchestrator":
-          case "error":
             break;
+
+          case "error": {
+            // Honest delivery: never discard daemon error frames. Log them and
+            // surface through the activity line the UI already renders.
+            const errText = data.error || "Unknown daemon error";
+            console.warn("[hive-ws] Daemon error:", errText);
+            setActivity({ text: `Daemon error: ${errText}`, timestamp: Date.now() });
+            break;
+          }
         }
       };
 
@@ -452,8 +489,9 @@ export function useHive(daemonUrl: string) {
           pending.reject(new Error("Disconnected"));
         }
         pendingUploadsRef.current.clear();
-        // Clear pending messages — they may contain stale subscriptions or tokens
-        pendingMessagesRef.current.length = 0;
+        // Keep pendingMessagesRef across reconnects: it only ever holds
+        // idempotent control frames (see QUEUEABLE_TYPES) which flush in
+        // order on reopen. One-shot actions are never queued.
         reconnectTimerRef.current = setTimeout(connect, reconnectDelayRef.current);
         reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 8000);
       };
@@ -482,7 +520,7 @@ export function useHive(daemonUrl: string) {
       pendingUploadsRef.current.clear();
       setConnected(false);
     };
-  }, [daemonUrl, connectEpoch]);
+  }, [resolvedUrl, connectEpoch]);
 
   /** Optimistically add a user message to the chat (shows immediately before server echo) */
   const addOptimisticEntry = useCallback(
