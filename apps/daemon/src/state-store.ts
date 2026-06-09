@@ -22,6 +22,9 @@ export interface DaemonSnapshot {
     task: string | null;
     managed: boolean;
     tty?: string;
+    /** Agent CLI type (claude/codex/gemini/...). Restored so the non-Claude
+     *  hook-contamination guard holds before the first discovery scan. */
+    model?: string;
   }>;
   messageQueue: Record<string, Array<{
     id: string;
@@ -38,17 +41,28 @@ export interface DaemonSnapshot {
     fromWorkerId?: string;
     contextWorkerIds?: string[];
     includeSenderContext?: boolean;
+    verify?: boolean;
+    maxVerifyAttempts?: number;
     autoCommit?: boolean;
+    failures?: number;
   }>>;
   messageIdCounter: number;
   locks: Array<{ path: string; workerId: string; tty?: string; lockedAt: number }>;
-  dispatchedTasks: Record<string, { task: string; project: string; sentAt: number; taskId?: string; workflowId?: string; fromWorkerId?: string; autoCommit?: boolean }>;
+  dispatchedTasks: Record<string, {
+    task: string; project: string; sentAt: number;
+    taskId?: string; workflowId?: string; fromWorkerId?: string;
+    verify?: boolean; maxVerifyAttempts?: number;
+    verifyAttempts?: number; verifyPhase?: boolean;
+    artifactsAtVerifyStart?: number;
+    autoCommit?: boolean;
+  }>;
   workflowHandoffs?: Record<string, string[]>;
   /** TTY → session_id mapping from register-tty. Survives daemon restarts so
    *  session file assignment is deterministic without birthtime heuristics. */
   ttySessionMap?: Record<string, string>;
-  /** Sticky quadrant assignments (workerId → slot 1-4). Survives daemon restarts
-   *  so agents keep their physical terminal position across restarts. */
+  /** Quadrant assignments (workerId → slot) at save time. Written for
+   *  debugging only  --  importState deliberately skips restoring these and
+   *  re-detects slots from physical window positions after a restart. */
   quadrantAssignments?: Record<string, number>;
 }
 

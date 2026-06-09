@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, unlinkSync, mkdirSync } from "fs";
+import { readdirSync, readFileSync, unlinkSync, mkdirSync, statSync } from "fs";
 import { join } from "path";
 import type { TelemetryReceiver } from "./telemetry.js";
 import { homedir } from "os";
@@ -17,6 +17,10 @@ import { homedir } from "os";
 
 const HOME = process.env.HOME || process.env.USERPROFILE || homedir();
 const OUTBOX_DIR = join(HOME, ".hive", "outbox");
+// Matches the in-memory message queue's 30-minute staleness drop: a file
+// that still fails dispatch after this long is dead-lettered instead of
+// retrying forever every 3s tick.
+const MAX_RETRY_AGE_MS = 30 * 60 * 1000;
 
 export class OutboxScanner {
   private telemetry: TelemetryReceiver;
@@ -41,11 +45,22 @@ export class OutboxScanner {
         const msg = JSON.parse(raw);
         if (this.process(msg)) {
           unlinkSync(fullPath);
+        } else if (this.isExpired(fullPath)) {
+          console.log(`[outbox] Dropping ${file}: undeliverable for over ${Math.round(MAX_RETRY_AGE_MS / 60000)}m`);
+          unlinkSync(fullPath);
         }
       } catch {
         // Bad JSON or processing error  --  remove to prevent infinite retry
         try { unlinkSync(fullPath); } catch { /* ignore */ }
       }
+    }
+  }
+
+  private isExpired(fullPath: string): boolean {
+    try {
+      return Date.now() - statSync(fullPath).mtimeMs > MAX_RETRY_AGE_MS;
+    } catch {
+      return false;
     }
   }
 

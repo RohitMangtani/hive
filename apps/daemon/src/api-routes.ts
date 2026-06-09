@@ -11,6 +11,7 @@ import {
   isSafeMachineId,
   isSafeModelId,
   isSafePathField,
+  isSafeRequestId,
   isSafeTaskField,
   isSafeWorkerId,
   isValidQuadrant,
@@ -206,6 +207,32 @@ export function registerApiRoutes(
       res.status(400).json({ error: "Missing task" });
       return;
     }
+    // Queued tasks are later dispatched through spawn/exec  --  validate the
+    // same fields here that those routes guard on the synchronous path.
+    if (!isSafeTaskField(task)) {
+      res.status(400).json({ error: "Invalid task" });
+      return;
+    }
+    if (project && !isSafePathField(project)) {
+      res.status(400).json({ error: "Invalid project path" });
+      return;
+    }
+    if (model && !isSafeModelId(model)) {
+      res.status(400).json({ error: "Invalid model" });
+      return;
+    }
+    if (preferMachine && !isSafeMachineId(preferMachine)) {
+      res.status(400).json({ error: "Invalid machine" });
+      return;
+    }
+    if (blockedBy && !isSafeRequestId(blockedBy)) {
+      res.status(400).json({ error: "Invalid blockedBy" });
+      return;
+    }
+    if (workflowId && !isSafeRequestId(workflowId)) {
+      res.status(400).json({ error: "Invalid workflowId" });
+      return;
+    }
     const queued = receiver.pushTask(task, project, priority ?? 10, blockedBy, workflowId, verify, maxVerifyAttempts, autoCommit, requires, preferMachine, model);
     res.json({ ok: true, task: queued, remaining: receiver.getTaskQueueLength() });
   });
@@ -252,7 +279,7 @@ export function registerApiRoutes(
       return;
     }
     if (status.stdout.trim()) {
-      res.status(400).json({ error: `Working tree dirty: ${status.stdout.trim().split("\\n")[0]}` });
+      res.status(400).json({ error: `Working tree dirty: ${status.stdout.trim().split("\n")[0]}` });
       return;
     }
     const reset = await runShellExec({
@@ -377,8 +404,20 @@ export function registerApiRoutes(
       res.status(400).json({ error: "Missing project or lesson" });
       return;
     }
+    if (!isSafePathField(project)) {
+      res.status(400).json({ error: "Invalid project path" });
+      return;
+    }
+    // Resolve bare names ("hive") through project discovery. Unresolved
+    // relative values are rejected  --  joining them against the daemon cwd
+    // used to create junk .claude/ directories inside the repo.
+    const resolvedProject = receiver.resolveProjectPath(project);
+    if (!resolvedProject) {
+      res.status(400).json({ error: `Unknown project "${project}"  --  pass an absolute project path` });
+      return;
+    }
 
-    const claudeDir = join(project, ".claude");
+    const claudeDir = join(resolvedProject, ".claude");
     const learningFile = join(claudeDir, "hive-learnings.md");
 
     try {

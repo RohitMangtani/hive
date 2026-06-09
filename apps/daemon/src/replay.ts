@@ -1,4 +1,4 @@
-import { createWriteStream, existsSync, mkdirSync, readFileSync } from "fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import crypto from "crypto";
@@ -26,6 +26,38 @@ export class ReplayManager {
   constructor() {
     if (!existsSync(REPLAY_DIR)) {
       mkdirSync(REPLAY_DIR, { recursive: true });
+    }
+    this.loadHistoryFromDisk();
+  }
+
+  /** Rebuild history from the JSONL files on disk so recordings made by a
+   *  previous daemon run stay listable and downloadable after a restart. */
+  private loadHistoryFromDisk(): void {
+    let files: string[];
+    try {
+      files = readdirSync(REPLAY_DIR);
+    } catch {
+      return;
+    }
+    for (const file of files) {
+      if (!file.endsWith(".jsonl")) continue;
+      const id = file.slice(0, -".jsonl".length);
+      const path = join(REPLAY_DIR, file);
+      try {
+        const stat = statSync(path);
+        // id format: replay_<startedAtMs>_<hex>
+        const tsMatch = id.match(/^replay_(\d+)_/);
+        const startedAt = tsMatch ? Number(tsMatch[1]) : Math.floor(stat.birthtimeMs || stat.mtimeMs);
+        this.history.set(id, {
+          id,
+          name: `Replay ${new Date(startedAt).toISOString()}`,
+          path,
+          startedAt,
+          // Recordings from a previous run are no longer being written;
+          // the last write time is the best available end marker.
+          endedAt: Math.floor(stat.mtimeMs),
+        });
+      } catch { /* unreadable file  --  skip */ }
     }
   }
 

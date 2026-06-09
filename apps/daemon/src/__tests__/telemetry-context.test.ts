@@ -5,7 +5,7 @@ const { writeFileSync } = vi.hoisted(() => ({
   writeFileSync: vi.fn(),
 }));
 const { sendInputToTty } = vi.hoisted(() => ({
-  sendInputToTty: vi.fn(() => ({ ok: true })),
+  sendInputToTty: vi.fn((..._args: unknown[]) => ({ ok: true })),
 }));
 const { execFileSync, execFile } = vi.hoisted(() => ({
   execFileSync: vi.fn(),
@@ -142,7 +142,7 @@ describe("TelemetryReceiver worker context", () => {
   });
 
   it("dispatches queued tasks to matching satellite workers and resolves project paths per machine", () => {
-    const relay = vi.fn(async () => ({ ok: true }));
+    const relay = vi.fn(async (_workerId: string, _content: string, _from?: string) => ({ ok: true }));
     const remoteWorker = {
       id: "satellite-1:w_remote",
       pid: 303,

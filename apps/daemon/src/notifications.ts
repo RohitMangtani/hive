@@ -35,7 +35,6 @@ export class NotificationManager {
   private lastNotified = new Map<string, number>();
   private lastPushed = new Map<string, number>();
   private previousStatus = new Map<string, string>();
-  private completionCache = new Map<string, { action: string; ts: number }>();
   private pushMgr: WebPushManager | null = null;
   private telemetryRef: TelemetryReceiver | null = null;
   // Debounce: pending completion notifications. Only fire if agent is STILL idle after delay.
@@ -62,7 +61,7 @@ export class NotificationManager {
       this.lastNotified.delete(workerId);
       this.lastPushed.delete(workerId);
       this.previousStatus.delete(workerId);
-      this.completionCache.delete(workerId);
+      this.idleSince.delete(workerId);
       const pending = this.pendingCompletions.get(workerId);
       if (pending) { clearTimeout(pending); this.pendingCompletions.delete(workerId); }
     });
@@ -80,6 +79,23 @@ export class NotificationManager {
   handleSatelliteStatusChange(workerId: string, state: WorkerState, prevStatus: string): void {
     if (!this.config.enabled) return;
 
+    // Mirror handleUpdate's idle/pending bookkeeping. This only fires on
+    // transitions (ws-server dedups), which is sufficient: idleSince is set
+    // on entry to idle and cleared on leaving it, and a resume cancels any
+    // pending completion push so flickers can't produce mid-task "done".
+    if (state.status === "idle") {
+      if (!this.idleSince.has(workerId)) this.idleSince.set(workerId, Date.now());
+    } else {
+      this.idleSince.delete(workerId);
+    }
+    if (state.status === "working" || state.status === "stuck") {
+      const pending = this.pendingCompletions.get(workerId);
+      if (pending) {
+        clearTimeout(pending);
+        this.pendingCompletions.delete(workerId);
+      }
+    }
+
     // Stuck → macOS desktop notification
     if (state.status === "stuck" && prevStatus !== "stuck") {
       this.notify(workerId, state);
@@ -88,10 +104,11 @@ export class NotificationManager {
 
     if (this.config.pushOnComplete && this.isCompletionTransition(workerId, state, prevStatus)) {
       if (!this.pendingCompletions.has(workerId)) {
-        if (!this.idleSince.has(workerId)) this.idleSince.set(workerId, Date.now());
         this.pendingCompletions.set(workerId, setTimeout(() => {
           this.pendingCompletions.delete(workerId);
-          const current = this.telemetryRef?.get(workerId);
+          // Satellite workers live in ws-server's merged snapshot, not the
+          // local telemetry map  --  telemetry.get() never sees prefixed ids.
+          const current = this.resolveWorker(workerId);
           if (!current || current.status !== "idle") return;
           if (this.telemetryRef && this.telemetryRef.isToolInFlight(workerId)) return;
           const idleStart = this.idleSince.get(workerId);
@@ -100,6 +117,13 @@ export class NotificationManager {
         }, 15_000));
       }
     }
+  }
+
+  /** Resolve a worker by id, including prefixed satellite ids. */
+  private resolveWorker(workerId: string): WorkerState | undefined {
+    if (!this.telemetryRef) return undefined;
+    return this.telemetryRef.get(workerId)
+      ?? this.telemetryRef.getAllWorkersIncludingSatellites().find((w) => w.id === workerId);
   }
 
   private handleUpdate(workerId: string, state: WorkerState): void {
@@ -150,7 +174,7 @@ export class NotificationManager {
           if (!current || current.status !== "idle") return;
           if (this.telemetryRef && this.telemetryRef.isToolInFlight(workerId)) return;
           if (this.telemetryRef && !this.telemetryRef.isIdleConfirmed(workerId)) return;
-          // Verify continuous idle: agent must have been idle for 60s+ straight
+          // Verify continuous idle: agent must have been idle for 15s+ straight
           const idleStart = this.idleSince.get(workerId);
           if (!idleStart || Date.now() - idleStart < 15_000) return;
           this.pushComplete(workerId, current);

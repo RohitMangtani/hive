@@ -33,8 +33,9 @@ export function readTail(path: string, bytes: number): string {
 export function describeBashCommand(cmd: string): string {
   if (!cmd) return "Running command";
   const c = cmd.toLowerCase();
-  if (c.includes("npm run build") || c.includes("next build") || c.includes("tsc") && !c.includes("--noEmit")) return "Building project";
-  if (c.includes("tsc") && c.includes("--noEmit")) return "Type-checking";
+  // c is lowercased, so flag comparisons must be lowercase too
+  if (c.includes("npm run build") || c.includes("next build") || (c.includes("tsc") && !c.includes("--noemit"))) return "Building project";
+  if (c.includes("tsc") && c.includes("--noemit")) return "Type-checking";
   if (c.includes("npm run test") || c.includes("jest") || c.includes("vitest") || c.includes("npm test")) return "Running tests";
   if (c.includes("git push")) return "Pushing to remote";
   if (c.includes("git commit")) return "Committing changes";

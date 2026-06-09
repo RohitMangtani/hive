@@ -68,13 +68,22 @@ export function resolveExecCwd(
   return { cwd: candidate };
 }
 
+// macOS stays pinned to zsh (login-shell PATH setup matches the rest of the
+// daemon); stock Linux distros often lack zsh, so fall back to bash, then sh.
+function resolvePosixShell(): string {
+  if (process.platform === "darwin") return "/bin/zsh";
+  if (existsSync("/bin/zsh")) return "/bin/zsh";
+  if (existsSync("/bin/bash")) return "/bin/bash";
+  return "/bin/sh";
+}
+
 export function runShellExec(request: ShellExecRequest): Promise<ShellExecResult> {
   const timeoutMs = normalizeExecTimeout(request.timeoutMs);
   const cwd = request.cwd || homedir();
   const startedAt = Date.now();
 
   const isWindows = process.platform === "win32";
-  const shell = isWindows ? "cmd.exe" : "/bin/zsh";
+  const shell = isWindows ? "cmd.exe" : resolvePosixShell();
   const shellArgs = isWindows ? ["/c", request.command] : ["-lc", request.command];
 
   return new Promise((resolve) => {

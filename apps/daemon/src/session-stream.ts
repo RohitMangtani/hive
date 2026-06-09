@@ -325,9 +325,24 @@ export class SessionStreamer {
       if (stat.size <= sub.byteOffset) return;
 
       const buf = readFileSync(sub.filePath);
-      const newContent = buf.subarray(sub.byteOffset).toString("utf-8");
       // Use buf.length (actual bytes read) not stat.size  --  file may have grown between stat and read
-      sub.byteOffset = buf.length;
+      const chunk = buf.subarray(sub.byteOffset);
+      // Torn-write guard: fs.watch fires while Claude is mid-append, so the
+      // chunk can end in a partial line. Only advance the offset past the
+      // last complete newline and re-read the partial tail on the next poll.
+      // A complete-JSON tail without a trailing newline yet is consumed too.
+      const lastNewline = chunk.lastIndexOf(0x0a);
+      const tail = lastNewline === -1 ? chunk : chunk.subarray(lastNewline + 1);
+      let newContent: string;
+      if (tail.length === 0 || isCompleteJsonLine(tail.toString("utf-8"))) {
+        newContent = chunk.toString("utf-8");
+        sub.byteOffset = buf.length;
+      } else if (lastNewline === -1) {
+        return; // Nothing complete yet  --  carry the whole chunk
+      } else {
+        newContent = chunk.subarray(0, lastNewline + 1).toString("utf-8");
+        sub.byteOffset += lastNewline + 1;
+      }
 
       const entries: ChatEntry[] = [];
       for (const line of newContent.split("\n").filter(Boolean)) {
@@ -352,8 +367,21 @@ export class SessionStreamer {
   }
 }
 
-/** Regex to detect hive routing messages */
-const HIVE_ROUTING_RE = /^Read \/Users\/\w+\/\.hive\/context-messages\/(msg-[\w-]+\.md) and follow it exactly\./;
+/** True when the string parses as a complete JSON value (a finished JSONL line) */
+function isCompleteJsonLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  try {
+    JSON.parse(trimmed);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Regex to detect hive routing messages. Matches any home directory layout
+ *  (macOS /Users, Linux /home, Windows paths)  --  satellites are cross-platform. */
+const HIVE_ROUTING_RE = /^Read .+[/\\]\.hive[/\\]context-messages[/\\](msg-[\w-]+\.md) and follow it exactly\./;
 
 /** Extract real user message from a hive context-message file */
 function resolveRoutedMessage(text: string): string | null {

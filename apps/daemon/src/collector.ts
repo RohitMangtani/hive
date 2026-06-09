@@ -6,14 +6,23 @@
  * Read-only  --  never blocks or modifies agent behavior.
  */
 
-import { existsSync, mkdirSync, appendFileSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, appendFileSync, renameSync, statSync } from "fs";
 import { join } from "path";
 import type { Request, Response, NextFunction } from "express";
 import type express from "express";
 import { homedir } from "os";
+import { readTail } from "./utils.js";
 
 const HOME = process.env.HOME || process.env.USERPROFILE || homedir();
 const COLLECTOR_DIR = join(HOME, ".hive", "collector");
+
+// Size-based rotation: when a JSONL file exceeds this, it is renamed to
+// <name>.1 (replacing any previous rotation) and a fresh file is started.
+// Keeps current + one rotated generation so disk use is bounded.
+const MAX_JSONL_BYTES = 10 * 1024 * 1024;
+// API reads are capped to the last N bytes so a request can never trigger
+// a multi-hundred-MB synchronous read on the Express request path.
+const MAX_READ_BYTES = 2 * 1024 * 1024;
 
 // Time windows
 const WRITE_WRITE_WINDOW = 5 * 60 * 1000;   // 5 min  --  write-write conflict
@@ -499,13 +508,34 @@ export class Collector {
 
   private appendJsonl(filename: string, data: unknown): void {
     try {
-      appendFileSync(join(COLLECTOR_DIR, filename), JSON.stringify(data) + "\n");
+      const path = join(COLLECTOR_DIR, filename);
+      this.rotateIfNeeded(path);
+      appendFileSync(path, JSON.stringify(data) + "\n");
     } catch { /* non-critical */ }
   }
 
+  private rotateIfNeeded(path: string): void {
+    try {
+      if (statSync(path).size < MAX_JSONL_BYTES) return;
+    } catch {
+      return; // File missing  --  nothing to rotate
+    }
+    try {
+      renameSync(path, `${path}.1`);
+    } catch { /* non-critical */ }
+  }
+
+  /** Read a JSONL file bounded to the last MAX_READ_BYTES. When the read is
+   *  truncated, the first (possibly partial) line is discarded. */
   private readJsonl<T>(filename: string, since: number): T[] {
     try {
-      const content = readFileSync(join(COLLECTOR_DIR, filename), "utf-8");
+      const path = join(COLLECTOR_DIR, filename);
+      const size = statSync(path).size;
+      let content = readTail(path, MAX_READ_BYTES);
+      if (size > MAX_READ_BYTES) {
+        const firstNewline = content.indexOf("\n");
+        content = firstNewline === -1 ? "" : content.slice(firstNewline + 1);
+      }
       const results: T[] = [];
       for (const line of content.split("\n")) {
         if (!line) continue;
@@ -520,9 +550,17 @@ export class Collector {
     }
   }
 
+  /** Count lines in the current (post-rotation) file, bounded to the last
+   *  MAX_READ_BYTES. Approximate for files larger than the read cap. */
   private countJsonlLines(filename: string): number {
     try {
-      const content = readFileSync(join(COLLECTOR_DIR, filename), "utf-8");
+      const path = join(COLLECTOR_DIR, filename);
+      const size = statSync(path).size;
+      let content = readTail(path, MAX_READ_BYTES);
+      if (size > MAX_READ_BYTES) {
+        const firstNewline = content.indexOf("\n");
+        content = firstNewline === -1 ? "" : content.slice(firstNewline + 1);
+      }
       return content.split("\n").filter(Boolean).length;
     } catch {
       return 0;

@@ -2,7 +2,7 @@ import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { randomBytes } from "crypto";
 import { hostname, homedir } from "os";
-import { basename, join } from "path";
+import { basename, isAbsolute, join } from "path";
 import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { describeAction, truncate } from "./utils.js";
 import type { DaemonSnapshot } from "./state-store.js";
@@ -42,6 +42,26 @@ interface QueuedMessage {
   queuedAt: number;
   withIdentity?: boolean;
   lastAction?: string;
+  markDashboardInput?: boolean;
+  trackDispatch?: boolean;
+  taskBrief?: string;
+  taskId?: string;
+  workflowId?: string;
+  fromWorkerId?: string;
+  contextWorkerIds?: string[];
+  includeSenderContext?: boolean;
+  verify?: boolean;
+  maxVerifyAttempts?: number;
+  autoCommit?: boolean;
+  /** Failed drain attempts. Message is dropped after MAX_DRAIN_FAILURES. */
+  failures?: number;
+}
+
+interface SendMessageOptions {
+  source: string;
+  lastAction?: string;
+  queueIfBusy?: boolean;
+  withIdentity?: boolean;
   markDashboardInput?: boolean;
   trackDispatch?: boolean;
   taskBrief?: string;
@@ -985,9 +1005,32 @@ export class TelemetryReceiver {
     return lines.join("\n");
   }
 
+  /** Resolve a project value to a known absolute path. Bare names ("hive")
+   *  are mapped through swarm project discovery and live worker cwds.
+   *  Returns null for unknown relative values so callers can reject them
+   *  instead of creating junk directories inside the daemon cwd. */
+  resolveProjectPath(input: string): string | null {
+    if (!input) return null;
+    const expanded = input.startsWith("~/") ? join(HOME, input.slice(2)) : input;
+    if (isAbsolute(expanded)) return expanded;
+    const name = expanded.replace(/\/+$/, "");
+    for (const entry of this.getSwarmProjects().projects) {
+      if (entry.name === name) return entry.machines?.local || entry.path;
+    }
+    for (const w of this.workers.values()) {
+      if (w.projectName === name) return w.project;
+    }
+    return null;
+  }
+
   writeLearning(project: string, lesson: string): void {
     if (!project) return;
-    const claudeDir = join(project, ".claude");
+    const resolved = this.resolveProjectPath(project);
+    if (!resolved) {
+      console.log(`[auto-learn] Skipping learning for unknown project "${project}"`);
+      return;
+    }
+    const claudeDir = join(resolved, ".claude");
     const learningFile = join(claudeDir, "hive-learnings.md");
     try {
       if (!existsSync(claudeDir)) mkdirSync(claudeDir, { recursive: true });
@@ -1051,7 +1094,11 @@ export class TelemetryReceiver {
   /** Relay a message to a satellite worker. Returns null if workerId is local. */
   async relaySatelliteMessage(workerId: string, content: string, from?: string): Promise<{ ok: boolean; error?: string } | null> {
     if (!workerId.includes(":") || !this.satelliteMessageRelay) return null;
-    return this.satelliteMessageRelay(workerId, content, from);
+    const result = await this.satelliteMessageRelay(workerId, content, from);
+    // Record input for the prefixed satellite id so completion push
+    // notifications can fire for work dispatched through the REST API.
+    if (result.ok) this.markInputSent(workerId, from ? `api:message:from:${from}` : "api:message");
+    return result;
   }
 
   /** Get all workers including satellite workers (for REST API). */
@@ -1414,6 +1461,7 @@ export class TelemetryReceiver {
     this.quadrantAssignments.delete(id);
     this.signals.delete(id);
     this.lastDashboardInput.delete(id);
+    this.contextCache.delete(id);
     for (const [sid, wid] of this.sessionToWorker) {
       if (wid === id) {
         this.sessionToWorker.delete(sid);
@@ -1660,11 +1708,12 @@ export class TelemetryReceiver {
         } catch {
           this.toolInFlight.set(worker.id, null);
         }
+        // Dead PID: release locks and flip idle, but skip suggestions and
+        // notify  --  discovery.scan() removes this worker in the same tick,
+        // so a paid suggestion call and an idle broadcast would be wasted.
         worker.status = "idle";
         worker.currentAction = null;
         this.coordination.releaseAllLocks(worker.id);
-        this.generateSuggestions(worker);
-        this.notify(worker);
       }
     }
     this.checkCompletedDispatches();
@@ -1733,23 +1782,7 @@ export class TelemetryReceiver {
   sendToWorker(
     workerId: string,
     content: string,
-    options: {
-      source: string;
-      lastAction?: string;
-      queueIfBusy?: boolean;
-      withIdentity?: boolean;
-      markDashboardInput?: boolean;
-      trackDispatch?: boolean;
-      taskBrief?: string;
-      taskId?: string;
-      workflowId?: string;
-      fromWorkerId?: string;
-      contextWorkerIds?: string[];
-      includeSenderContext?: boolean;
-      verify?: boolean;
-      maxVerifyAttempts?: number;
-      autoCommit?: boolean;
-    },
+    options: SendMessageOptions,
   ): { ok: true; queued?: boolean; id?: string; position?: number } | { ok: false; error: string } {
     const worker = this.getWorkerSnapshot(workerId);
     if (!worker) {
@@ -1779,23 +1812,7 @@ export class TelemetryReceiver {
     }
 
     if (options.queueIfBusy !== false && worker.status === "working") {
-      const id = this.enqueueMessage(workerId, {
-        content,
-        source: options.source,
-        withIdentity: options.withIdentity,
-        lastAction: options.lastAction,
-        markDashboardInput: options.markDashboardInput,
-        trackDispatch: options.trackDispatch,
-        taskBrief: options.taskBrief,
-        taskId: options.taskId,
-        workflowId: options.workflowId,
-        fromWorkerId: options.fromWorkerId,
-        contextWorkerIds: options.contextWorkerIds,
-        includeSenderContext: options.includeSenderContext,
-        verify: options.verify,
-        maxVerifyAttempts: options.maxVerifyAttempts,
-        autoCommit: options.autoCommit,
-      });
+      const id = this.enqueueMessage(workerId, this.toQueuedMessage(content, options));
       return {
         ok: true,
         queued: true,
@@ -1820,22 +1837,7 @@ export class TelemetryReceiver {
         const result = this.processManager.sendMessage(workerId, payload);
         if (result.status === "busy") {
           if (options.queueIfBusy !== false) {
-            const id = this.enqueueMessage(workerId, {
-              content,
-              source: options.source,
-              withIdentity: options.withIdentity,
-              lastAction: options.lastAction,
-              markDashboardInput: options.markDashboardInput,
-              trackDispatch: options.trackDispatch,
-              taskBrief: options.taskBrief,
-              taskId: options.taskId,
-              workflowId: options.workflowId,
-              fromWorkerId: options.fromWorkerId,
-              contextWorkerIds: options.contextWorkerIds,
-              includeSenderContext: options.includeSenderContext,
-              verify: options.verify,
-              maxVerifyAttempts: options.maxVerifyAttempts,
-            });
+            const id = this.enqueueMessage(workerId, this.toQueuedMessage(content, options));
             return {
               ok: true,
               queued: true,
@@ -1873,8 +1875,12 @@ export class TelemetryReceiver {
       worker.stuckMessage = undefined;
       this.idleConfirmed.set(workerId, false);
       if (options.markDashboardInput) this.markDashboardInput(workerId);
-      this.markInputSent(workerId, options.source);
     }
+    // Record input for remote sends too (keyed by the prefixed satellite id).
+    // The completion push notification gate reads lastInputSent  --  without
+    // this, satellite workers never qualify for a "done" push. Status and
+    // optimistic state stay local-only: satellite state is owned by ws-server.
+    this.markInputSent(workerId, options.source);
     if (options.trackDispatch) {
       this.trackDispatch(
         workerId,
@@ -1899,23 +1905,7 @@ export class TelemetryReceiver {
   async sendToWorkerAsync(
     workerId: string,
     content: string,
-    options: {
-      source: string;
-      lastAction?: string;
-      queueIfBusy?: boolean;
-      withIdentity?: boolean;
-      markDashboardInput?: boolean;
-      trackDispatch?: boolean;
-      taskBrief?: string;
-      taskId?: string;
-      workflowId?: string;
-      fromWorkerId?: string;
-      contextWorkerIds?: string[];
-      includeSenderContext?: boolean;
-      verify?: boolean;
-      maxVerifyAttempts?: number;
-      autoCommit?: boolean;
-    },
+    options: SendMessageOptions,
   ): Promise<{ ok: true; queued?: boolean; id?: string; position?: number } | { ok: false; error: string }> {
     const worker = this.getWorkerSnapshot(workerId);
     if (!worker) {
@@ -1958,21 +1948,7 @@ export class TelemetryReceiver {
     }
 
     if (options.queueIfBusy !== false && worker.status === "working") {
-      const id = this.enqueueMessage(workerId, {
-        content,
-        source: options.source,
-        withIdentity: options.withIdentity,
-        lastAction: options.lastAction,
-        markDashboardInput: options.markDashboardInput,
-        trackDispatch: options.trackDispatch,
-        taskBrief: options.taskBrief,
-        taskId: options.taskId,
-        workflowId: options.workflowId,
-        fromWorkerId: options.fromWorkerId,
-        contextWorkerIds: options.contextWorkerIds,
-        includeSenderContext: options.includeSenderContext,
-        autoCommit: options.autoCommit,
-      });
+      const id = this.enqueueMessage(workerId, this.toQueuedMessage(content, options));
       return {
         ok: true,
         queued: true,
@@ -1991,8 +1967,10 @@ export class TelemetryReceiver {
       worker.stuckMessage = undefined;
       this.idleConfirmed.set(workerId, false);
       if (options.markDashboardInput) this.markDashboardInput(workerId);
-      this.markInputSent(workerId, options.source);
     }
+    // Record input for remote sends too (keyed by the prefixed satellite id)
+    // so the completion push gate works for satellite workers.
+    this.markInputSent(workerId, options.source);
     if (options.trackDispatch) {
       this.trackDispatch(
         workerId,
@@ -2050,6 +2028,28 @@ export class TelemetryReceiver {
     return { ok: true };
   }
 
+  /** Single source of truth for queue entries  --  every enqueue site goes
+   *  through this so option fields (verify, autoCommit, ...) can't drift. */
+  private toQueuedMessage(content: string, options: SendMessageOptions): Omit<QueuedMessage, "id" | "queuedAt"> {
+    return {
+      content,
+      source: options.source,
+      withIdentity: options.withIdentity,
+      lastAction: options.lastAction,
+      markDashboardInput: options.markDashboardInput,
+      trackDispatch: options.trackDispatch,
+      taskBrief: options.taskBrief,
+      taskId: options.taskId,
+      workflowId: options.workflowId,
+      fromWorkerId: options.fromWorkerId,
+      contextWorkerIds: options.contextWorkerIds,
+      includeSenderContext: options.includeSenderContext,
+      verify: options.verify,
+      maxVerifyAttempts: options.maxVerifyAttempts,
+      autoCommit: options.autoCommit,
+    };
+  }
+
   enqueueMessage(workerId: string, message: Omit<QueuedMessage, "id" | "queuedAt">): string {
     if (!this.messageQueue.has(workerId)) {
       this.messageQueue.set(workerId, []);
@@ -2095,6 +2095,8 @@ export class TelemetryReceiver {
     return result;
   }
 
+  private static readonly MAX_DRAIN_FAILURES = 5;
+
   private drainQueues(): void {
     for (const [workerId, queue] of this.messageQueue) {
       if (queue.length === 0) continue;
@@ -2126,13 +2128,23 @@ export class TelemetryReceiver {
       });
       if (result.ok && !result.queued) {
         console.log(`[queue] ${worker.tty}: drained ${msg.id} (${queue.length} remaining)`);
-      } else {
-        queue.unshift(msg);
-        if (!result.ok) {
-          console.log(`[queue] ${worker.tty || worker.id}: failed to drain ${msg.id}  --  ${result.error}`);
-        }
+        // One successful TTY send per tick  --  sends are slow and serialized.
+        break;
       }
-      break;
+
+      if (!result.ok) {
+        msg.failures = (msg.failures || 0) + 1;
+        if (msg.failures >= TelemetryReceiver.MAX_DRAIN_FAILURES) {
+          console.log(`[queue] ${worker.tty || worker.id}: dropping ${msg.id} after ${msg.failures} failed attempts  --  ${result.error}`);
+        } else {
+          console.log(`[queue] ${worker.tty || worker.id}: failed to drain ${msg.id} (attempt ${msg.failures}/${TelemetryReceiver.MAX_DRAIN_FAILURES})  --  ${result.error}`);
+          queue.unshift(msg);
+        }
+      } else {
+        // Worker became busy between snapshot and send  --  retry next tick.
+        queue.unshift(msg);
+      }
+      // Keep iterating: a failing worker queue must not starve the others.
     }
   }
 
@@ -2846,7 +2858,7 @@ export class TelemetryReceiver {
       if (queue.length > 0) messageQueue[wid] = [...queue];
     }
 
-    const dispatchedTasks: Record<string, { task: string; project: string; sentAt: number; taskId?: string; workflowId?: string; fromWorkerId?: string }> = {};
+    const dispatchedTasks: DaemonSnapshot["dispatchedTasks"] = {};
     for (const [wid, dt] of this.dispatchedTasks) {
       dispatchedTasks[wid] = { ...dt };
     }
@@ -2892,6 +2904,9 @@ export class TelemetryReceiver {
         status: "idle", currentAction: null, lastAction: w.lastAction,
         lastActionAt: w.lastActionAt, errorCount: w.errorCount,
         startedAt: w.startedAt, task: w.task, managed: w.managed, tty: w.tty,
+        // model must survive restarts: the non-Claude hook-contamination
+        // guards check it before the first discovery scan refreshes it.
+        model: w.model,
       };
       this.workers.set(w.id, restored);
       workerCount++;
