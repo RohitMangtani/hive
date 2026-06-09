@@ -89,12 +89,23 @@ if [ -n "$DEPLOY_URL" ]; then
   echo "Dashboard URL: $DEPLOY_URL"
 fi
 
-# Safety net: clear the repo homepage if Vercel's GitHub integration set it.
-# The Hive repo must NEVER have a homepage URL (see hive-learnings.md).
-if command -v gh >/dev/null 2>&1; then
-  CURRENT_HOMEPAGE="$(gh api repos/RohitMangtani/hive --jq '.homepage // empty' 2>/dev/null || true)"
-  if [ -n "$CURRENT_HOMEPAGE" ]; then
-    gh api repos/RohitMangtani/hive -X PATCH -f homepage="" >/dev/null 2>&1 || true
-    echo "Cleared repo homepage (was: $CURRENT_HOMEPAGE)"
+# Maintainer-only safety net: clear the repo homepage if Vercel's GitHub
+# integration set it (personal no-links policy, see hive-learnings.md).
+# Opt-in via HIVE_CLEAR_REPO_HOMEPAGE=1, and it only ever PATCHes the repo
+# this checkout's origin remote points at — never a hardcoded upstream.
+if [ "${HIVE_CLEAR_REPO_HOMEPAGE:-0}" = "1" ] && command -v gh >/dev/null 2>&1; then
+  ORIGIN_URL="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
+  REPO_SLUG=""
+  case "$ORIGIN_URL" in
+    git@github.com:*) REPO_SLUG="${ORIGIN_URL#git@github.com:}" ;;
+    https://github.com/*) REPO_SLUG="${ORIGIN_URL#https://github.com/}" ;;
+  esac
+  REPO_SLUG="${REPO_SLUG%.git}"
+  if [ -n "$REPO_SLUG" ]; then
+    CURRENT_HOMEPAGE="$(gh api "repos/$REPO_SLUG" --jq '.homepage // empty' 2>/dev/null || true)"
+    if [ -n "$CURRENT_HOMEPAGE" ]; then
+      gh api "repos/$REPO_SLUG" -X PATCH -f homepage="" >/dev/null 2>&1 || true
+      echo "Cleared repo homepage (was: $CURRENT_HOMEPAGE)"
+    fi
   fi
 fi

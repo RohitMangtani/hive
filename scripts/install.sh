@@ -5,6 +5,10 @@
 # Join existing:    bash scripts/install.sh --connect wss://URL TOKEN
 # Non-interactive:  bash scripts/install.sh --fresh
 #
+# Consent for the machine-wide Claude Code auto-approve hook:
+#   --auto-approve      install it without asking
+#   --no-auto-approve   skip it (interactive runs ask if neither is given)
+#
 # With no flags, prompts the user to choose.
 
 set -euo pipefail
@@ -12,21 +16,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-install_dependencies() {
-  local log_file
-  log_file="$(mktemp)"
-
-  if npm install --silent >"$log_file" 2>&1; then
-    rm -f "$log_file"
-    return 0
-  fi
-
-  echo ""
-  echo "  ✗ Dependency install failed. Last 50 lines:"
-  tail -50 "$log_file" 2>/dev/null | sed 's/^/    /'
-  rm -f "$log_file"
-  exit 1
-}
+# Pull the auto-approve consent flags out of the arg list before the
+# positional parsing below. They can appear anywhere; the --connect
+# positional contract (URL TOKEN) is unchanged.
+POSITIONAL_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --auto-approve)    export HIVE_AUTO_APPROVE=1 ;;
+    --no-auto-approve) export HIVE_AUTO_APPROVE=0 ;;
+    *) POSITIONAL_ARGS+=("$arg") ;;
+  esac
+done
+# bash 3.2 (macOS default) errors on empty-array expansion under set -u
+set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
 
 IS_LINUX=0
 IS_WSL=0
@@ -79,6 +81,50 @@ cleanup_hive_satellite_runtime() {
   rm -f "$HOME/.hive/runtime/satellite.json"
 }
 
+# Direct cloudflared install for Linux without Homebrew: static binary
+# from GitHub releases. Prefers /usr/local/bin (already on the daemon's
+# runtime PATH); falls back to ~/.local/bin with a PATH warning, because
+# tunnel auto-restart spawns "cloudflared" with the daemon's PATH.
+install_cloudflared_linux() {
+  local arch url tmp_bin target
+  case "$(uname -m)" in
+    x86_64|amd64)  arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *)
+      echo "  ✗ No cloudflared build for architecture $(uname -m)."
+      return 1
+      ;;
+  esac
+
+  url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
+  tmp_bin="$(mktemp)"
+  echo "  Downloading cloudflared (linux-${arch}) from GitHub releases..."
+  if ! curl -fsSL --retry 2 -o "$tmp_bin" "$url"; then
+    rm -f "$tmp_bin"
+    echo "  ✗ cloudflared download failed (network or GitHub unavailable)."
+    return 1
+  fi
+
+  if [ -w /usr/local/bin ]; then
+    target="/usr/local/bin/cloudflared"
+    install -m 755 "$tmp_bin" "$target"
+  elif sudo -n true 2>/dev/null; then
+    target="/usr/local/bin/cloudflared"
+    sudo -n install -m 755 "$tmp_bin" "$target"
+  else
+    mkdir -p "$HOME/.local/bin"
+    target="$HOME/.local/bin/cloudflared"
+    install -m 755 "$tmp_bin" "$target"
+    export PATH="$HOME/.local/bin:$PATH"
+    echo "  ⚠ Installed to ~/.local/bin (no sudo available)."
+    echo "    Make sure ~/.local/bin is on PATH in your shell rc, or tunnel"
+    echo "    auto-restarts after reboot will not find cloudflared:"
+    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
+  rm -f "$tmp_bin"
+  echo "  ✓ cloudflared installed at $target"
+}
+
 ensure_tunnel_tools() {
   local have_ngrok=0
   local have_cloudflared=0
@@ -108,6 +154,23 @@ ensure_tunnel_tools() {
       brew install cloudflared
       echo "  ✓ cloudflared installed"
       have_cloudflared=1
+    elif [ "$IS_GITBASH" -eq 1 ]; then
+      echo "  ✗ No public tunnel tool found."
+      echo "    Install one in PowerShell and re-run:"
+      echo "    winget install Cloudflare.cloudflared   (or: winget install ngrok.ngrok)"
+      echo "    Or use: npm run launch:local  (localhost only, no remote access)"
+      exit 1
+    elif [ "$IS_LINUX" -eq 1 ]; then
+      echo ""
+      if install_cloudflared_linux; then
+        have_cloudflared=1
+      else
+        echo "  ✗ No public tunnel tool found."
+        echo "    Install ngrok or cloudflared manually and re-run:"
+        echo "    https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+        echo "    Or use: npm run launch:local  (localhost only, no remote access)"
+        exit 1
+      fi
     else
       echo "  ✗ No public tunnel tool found."
       echo "    Install Homebrew (https://brew.sh), ngrok, or cloudflared and re-run."
@@ -210,15 +273,18 @@ echo ""
 
 # ── 1. Setup ──────────────────────────────────────────────────────────
 
-if [ ! -f "$HOME/.hive/token" ]; then
-  bash "$ROOT/setup.sh"
-else
-  echo "  ✓ Already set up"
-  # Always ensure dependencies are current (git pull may have changed them)
-  echo "  Installing dependencies..."
-  install_dependencies
-  echo "  ✓ Dependencies up to date"
+# The satellite flow must run unattended (LOCKED): never block on the
+# auto-approve consent prompt. With no explicit flag, install the hook —
+# setup-hooks.sh prints the loud notice + removal command either way.
+if [ "$SATELLITE_MODE" -eq 1 ] && [ -z "${HIVE_AUTO_APPROVE:-}" ]; then
+  export HIVE_AUTO_APPROVE=1
 fi
+
+# setup.sh is idempotent (token generation is guarded, hooks merge/upsert,
+# send-return compile is skipped when present), so always run it. Gating on
+# ~/.hive/token skipped hooks/identity/send-return forever when the token
+# was created by another path (satellite join, daemon, manual).
+bash "$ROOT/setup.sh"
 
 # ── Satellite: store config + start ───────────────────────────────────
 
@@ -257,7 +323,9 @@ if [ "$SATELLITE_MODE" -eq 1 ]; then
     elif [ "$IS_LINUX" -eq 1 ]; then
       fuser -k 3001/tcp 2>/dev/null || true
     else
-      kill "$(lsof -tiTCP:3001 -sTCP:LISTEN)" 2>/dev/null || true
+      # xargs handles multiple listener PIDs; a quoted $() would pass them
+      # as one newline-embedded argument and kill would fail
+      lsof -tiTCP:3001 -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
     fi
     sleep 2
   fi
@@ -599,6 +667,63 @@ if [ -z "$TUNNEL_URL" ]; then
 fi
 echo "  ✓ Tunnel ready"
 
+# ── 5b. Primary persistence (macOS launchd) ──────────────────────────
+# identity.sh and auto-update already reference com.hive.daemon; install
+# the plist so the primary survives reboots like satellites do. Mirrors
+# the satellite plist (KeepAlive + RunAtLoad), with one addition: the
+# command waits while another daemon owns :3001 instead of crash-looping
+# on EADDRINUSE, so it coexists with a Terminal-window daemon and takes
+# over when that daemon stops.
+DAEMON_PERSISTENCE=0
+if [ "$IS_LINUX" -eq 0 ] && [ "$IS_GITBASH" -eq 0 ]; then
+  NODE_DIR="$(dirname "$(which node 2>/dev/null || echo '/usr/local/bin/node')")"
+  DAEMON_PATH_ENV="$NODE_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.hive/logs"
+  cat > "$HOME/Library/LaunchAgents/com.hive.daemon.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hive.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd '$ROOT' &amp;&amp; while lsof -tiTCP:3001 -sTCP:LISTEN &gt;/dev/null 2&gt;&amp;1; do sleep 30; done; exec npm start</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$ROOT</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$DAEMON_PATH_ENV</string>
+    <key>HOME</key>
+    <string>$HOME</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$HOME/.hive/logs/daemon.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/.hive/logs/daemon.stderr.log</string>
+</dict>
+</plist>
+PLIST
+  # Only bootstrap if the label is not already loaded — booting out a
+  # live launchd-managed daemon mid-install would restart it for nothing.
+  if ! launchctl print "gui/$(id -u)/com.hive.daemon" >/dev/null 2>&1; then
+    launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.hive.daemon.plist" 2>/dev/null \
+      || launchctl load "$HOME/Library/LaunchAgents/com.hive.daemon.plist" 2>/dev/null || true
+  fi
+  DAEMON_PERSISTENCE=1
+  echo "  ✓ Installed launchd persistence (com.hive.daemon)"
+  echo "    The primary daemon now auto-starts at login and restarts if it dies."
+  echo "    Remove: launchctl bootout gui/$(id -u)/com.hive.daemon; rm ~/Library/LaunchAgents/com.hive.daemon.plist"
+fi
+
 # ── 6. Deploy dashboard ──────────────────────────────────────────────
 
 echo ""
@@ -624,7 +749,12 @@ echo "  running agents in Terminal windows."
 echo ""
 if [ "$DAEMON_START_MODE" = "terminal_window" ]; then
   echo "  The daemon is running in a separate Terminal window."
-  echo "  Keep that window open while Hive is running."
+  if [ "$DAEMON_PERSISTENCE" -eq 1 ]; then
+    echo "  If you close it (or reboot), launchd restarts the daemon"
+    echo "  automatically (com.hive.daemon)."
+  else
+    echo "  Keep that window open while Hive is running."
+  fi
   echo ""
 elif [ "$DAEMON_START_MODE" = "background" ]; then
   echo "  The daemon is running in the background."
@@ -659,7 +789,16 @@ echo ""
 echo "  To get this invite again later: npm run invite"
 echo ""
 echo "  Tunnel logs: ~/.hive/ngrok.log or ~/.hive/cloudflared.log"
-echo "  Stop: kill \$(lsof -tiTCP:3001)"
+if [ "$DAEMON_PERSISTENCE" -eq 1 ]; then
+  echo "  Stop: launchctl bootout gui/$(id -u)/com.hive.daemon"
+  echo "        then: lsof -tiTCP:3001 -sTCP:LISTEN | xargs kill"
+elif [ "$IS_LINUX" -eq 1 ] && [ "$IS_GITBASH" -eq 0 ]; then
+  echo "  Stop: fuser -k 3001/tcp"
+else
+  # -sTCP:LISTEN targets only the daemon; without it this would also
+  # kill clients merely connected to :3001 (curl, browser helpers)
+  echo "  Stop: lsof -tiTCP:3001 -sTCP:LISTEN | xargs kill"
+fi
 echo ""
 echo "  ────────────────────────────────────────────────"
 echo ""

@@ -1,6 +1,7 @@
 #!/bin/bash
-# Hive setup — run once after cloning.
-# Usage: bash setup.sh
+# Hive setup — safe to re-run; every step verifies and repairs itself.
+# Usage: bash setup.sh [--auto-approve|--no-auto-approve]
+# (flags are forwarded to setup-hooks.sh)
 
 set -euo pipefail
 
@@ -36,6 +37,34 @@ if [ "$NODE_MAJOR" -lt 20 ]; then
   exit 1
 fi
 echo "  ✓ Node.js $(node -v)"
+
+# python3 is used by the Claude hooks (identity, auto-approve, telemetry)
+# and tunnel URL extraction. Those failures are silenced at runtime, so
+# warn loudly here instead of degrading invisibly later.
+PY3_OK=1
+PY3_HINT=""
+if [ "$(uname)" = "Darwin" ]; then
+  # /usr/bin/python3 without Command Line Tools is a stub that pops a GUI
+  # installer dialog when invoked — treat it as missing.
+  PY3_PATH="$(command -v python3 2>/dev/null || true)"
+  if [ -z "$PY3_PATH" ]; then
+    PY3_OK=0
+    PY3_HINT="xcode-select --install"
+  elif [ "$PY3_PATH" = "/usr/bin/python3" ] && ! xcode-select -p &>/dev/null; then
+    PY3_OK=0
+    PY3_HINT="xcode-select --install"
+  fi
+elif ! command -v python3 &>/dev/null; then
+  PY3_OK=0
+  PY3_HINT="sudo apt install python3  (or your distro/winget equivalent)"
+fi
+if [ "$PY3_OK" -eq 1 ]; then
+  echo "  ✓ python3"
+else
+  echo "  ⚠ python3 not available — identity/peer-summary hooks, Windows"
+  echo "    inbox delivery, and tunnel URL parsing will silently degrade."
+  echo "    Install: $PY3_HINT"
+fi
 
 HAS_CLAUDE=0
 HAS_CODEX=0
@@ -175,20 +204,15 @@ echo "  ✓ ~/.hive/token ready"
 # ── Set up Claude Code hooks (if Claude is installed) ───────────────
 
 if [ "$HAS_CLAUDE" -eq 1 ]; then
-  bash setup-hooks.sh
+  bash setup-hooks.sh "$@"
   echo "  ✓ Claude Code hooks configured"
 else
   echo "  • Claude Code not installed — skipping Claude hook setup"
 fi
 
-# ── Create .env from template ────────────────────────────────────────
-
-if [ ! -f .env ]; then
-  cp .env.example .env
-  echo "  ✓ .env created from template"
-else
-  echo "  ✓ .env already exists"
-fi
+# Note: no .env file is created. Nothing loads a root .env — the daemon
+# and scripts read configuration from the process environment. See
+# .env.example for the variables that actually exist.
 
 # ── Done ─────────────────────────────────────────────────────────────
 

@@ -59,7 +59,12 @@ if [ -f "$HIVE_DIR/primary-url" ]; then
       wait "$STACK_PID"
     else
       echo "  Starting satellite daemon..."
-      npx tsx apps/daemon/src/index.ts --satellite &
+      # Append to the same logs the background service uses so the
+      # failure hint below points at output this start actually wrote.
+      mkdir -p "$HIVE_DIR/logs"
+      npx tsx apps/daemon/src/index.ts --satellite \
+        >> "$HIVE_DIR/logs/satellite.stdout.log" \
+        2>> "$HIVE_DIR/logs/satellite.stderr.log" &
       STACK_PID=$!
       STARTED_STACK=1
 

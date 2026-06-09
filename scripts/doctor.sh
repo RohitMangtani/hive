@@ -29,6 +29,25 @@ print_status() {
   echo ""
   echo "Hive doctor"
   echo ""
+  echo "Prerequisites:"
+  if command -v node &>/dev/null; then
+    echo "  node: $(node -v)"
+  else
+    echo "  node: MISSING — install v20+ from https://nodejs.org"
+  fi
+  if [ "$(uname)" = "Darwin" ] && [ "$(command -v python3 2>/dev/null)" = "/usr/bin/python3" ] && ! xcode-select -p &>/dev/null; then
+    echo "  python3: stub only — run 'xcode-select --install' (hooks and tunnel URL parsing need a working python3)"
+  elif command -v python3 &>/dev/null; then
+    echo "  python3: found"
+  else
+    echo "  python3: MISSING — identity/auto-approve hooks and tunnel URL parsing degrade without it"
+  fi
+  if command -v ngrok &>/dev/null || command -v cloudflared &>/dev/null; then
+    echo "  tunnel tool: found"
+  else
+    echo "  tunnel tool: none — install ngrok or cloudflared for the hosted dashboard"
+  fi
+  echo ""
   echo "Processes:"
   pgrep -af 'apps/daemon/src/index.ts|dist/index.js' 2>/dev/null || echo "  none"
   echo ""
@@ -44,7 +63,8 @@ print_status() {
   ls "$LAUNCH_DIR"/com.hive.satellite*.plist 2>/dev/null || echo "  none"
   echo ""
   echo "launchctl:"
-  launchctl print "gui/$UID_STR/com.hive.satellite" 2>/dev/null | rg 'state =|pid =|program =' || echo "  com.hive.satellite not loaded"
+  launchctl print "gui/$UID_STR/com.hive.satellite" 2>/dev/null | grep -E 'state =|pid =|program =' || echo "  com.hive.satellite not loaded"
+  launchctl print "gui/$UID_STR/com.hive.daemon" 2>/dev/null | grep -E 'state =|pid =|program =' || echo "  com.hive.daemon not loaded"
   echo ""
 }
 

@@ -17,6 +17,34 @@ Set-Location $Root
 
 $HiveDir = Join-Path $env:USERPROFILE ".hive"
 
+function Test-CommandExists($name) {
+  $null -ne (Get-Command $name -ErrorAction SilentlyContinue)
+}
+
+# -- Dependency checks (fail fast, with install instructions) --
+
+$depErrors = @()
+if (-not (Test-CommandExists node)) {
+  $depErrors += "Node.js 20+ -- winget install OpenJS.NodeJS.LTS  (or https://nodejs.org)"
+} else {
+  $nodeMajor = [int]((& node -v) -replace "v(\d+)\..*", '$1')
+  if ($nodeMajor -lt 20) {
+    $depErrors += "Node.js 20+ (found v$nodeMajor) -- winget install OpenJS.NodeJS.LTS"
+  }
+}
+if (-not (Test-CommandExists npm)) {
+  $depErrors += "npm (ships with Node.js) -- winget install OpenJS.NodeJS.LTS"
+}
+
+if ($depErrors.Count -gt 0) {
+  Write-Host ""
+  Write-Host "  X Missing dependencies:"
+  foreach ($e in $depErrors) { Write-Host "    - $e" }
+  Write-Host ""
+  Write-Host "  Install them and re-run this script."
+  exit 1
+}
+
 function Install-Dependencies {
   $logFile = [System.IO.Path]::GetTempFileName()
   try {
@@ -119,14 +147,30 @@ Write-Host ""
 
 # -- 1. Setup --
 
+# The satellite flow must run unattended: never block on the bash-side
+# auto-approve consent prompt. setup-hooks.sh prints a loud notice with
+# the removal command instead.
+if ($SatelliteMode -and -not $env:HIVE_AUTO_APPROVE) {
+  $env:HIVE_AUTO_APPROVE = "1"
+}
+
 $tokenFile = Join-Path $HiveDir "token"
-if (-not (Test-Path $tokenFile)) {
-  # Try bash setup if available (Git Bash on Windows)
-  $hasBash = $null -ne (Get-Command bash -ErrorAction SilentlyContinue)
-  if ($hasBash) {
-    & bash (Join-Path $Root "setup.sh") 2>$null
-  }
-  if (-not $hasBash -or $LASTEXITCODE -ne 0) {
+# setup.sh is idempotent (token generation guarded, hooks merge/upsert),
+# so run it on every install when bash exists: re-runs verify and repair
+# hooks/token/deps instead of skipping because the token file exists.
+$hasBash = $null -ne (Get-Command bash -ErrorAction SilentlyContinue)
+$setupOk = $false
+if ($hasBash) {
+  & bash (Join-Path $Root "setup.sh") 2>$null
+  $setupOk = ($LASTEXITCODE -eq 0)
+}
+if (-not $setupOk) {
+  if (Test-Path $tokenFile) {
+    Write-Host "  OK Already set up"
+    Write-Host "  Installing dependencies..."
+    Install-Dependencies
+    Write-Host "  OK Dependencies up to date"
+  } else {
     # setup.sh may fail on Windows - run essential steps manually
     Write-Host "  Running Windows setup..."
 
@@ -187,17 +231,9 @@ if (-not (Test-Path $tokenFile)) {
 
     Write-Host "  OK Token ready"
 
-    # Create .env
-    if (-not (Test-Path ".env") -and (Test-Path ".env.example")) {
-      Copy-Item ".env.example" ".env"
-      Write-Host "  OK .env created"
-    }
+    # Note: no .env file is created. Nothing loads a root .env -- see
+    # .env.example for the variables read from the process environment.
   }
-} else {
-  Write-Host "  OK Already set up"
-  Write-Host "  Installing dependencies..."
-  Install-Dependencies
-  Write-Host "  OK Dependencies up to date"
 }
 
 # -- Satellite mode --
@@ -428,6 +464,40 @@ goto loop
 # ==================================================================
 # Primary mode - start daemon + tunnel
 # ==================================================================
+
+# -- Check primary-mode dependencies --
+# 'npm start' runs apps/daemon/scripts/start.sh, which needs bash (Git
+# Bash) plus python3 and pgrep on bash's PATH to extract the tunnel URL.
+# Without them the install times out at 'Waiting for tunnel', so fail
+# fast here with instructions instead. (Satellite mode -Connect does not
+# need these; it never runs start.sh.)
+
+if (-not (Test-CommandExists bash)) {
+  Write-Host "  X bash not found. Primary mode runs the daemon via a bash script."
+  Write-Host "    Install Git for Windows (includes Git Bash):"
+  Write-Host "    winget install Git.Git   (or https://git-scm.com/download/win)"
+  Write-Host "    Then re-run this script from a new terminal."
+  exit 1
+}
+Write-Host "  OK bash"
+
+& bash -c "command -v python3 >/dev/null 2>&1"
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "  X python3 not visible from bash. The tunnel start script needs it."
+  Write-Host "    Install Python 3 and make sure 'python3' is on PATH:"
+  Write-Host "    winget install Python.Python.3.12"
+  Write-Host "    (the Microsoft Store build also installs a 'python3' alias)"
+  Write-Host "    Then re-run this script from a new terminal."
+  exit 1
+}
+Write-Host "  OK python3"
+
+& bash -c "command -v pgrep >/dev/null 2>&1"
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "  ! pgrep not visible from bash. Tunnel reuse detection is degraded;"
+  Write-Host "    restarts may rotate the tunnel URL. Git Bash does not ship pgrep --"
+  Write-Host "    install it via MSYS2 (pacman -S procps-ng) or ignore this warning."
+}
 
 # -- Check tunnel tools --
 

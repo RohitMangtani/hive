@@ -1,8 +1,31 @@
 #!/bin/bash
 # One-time setup: install or update Hive hooks in ~/.claude/settings.json.
-# Run: bash setup-hooks.sh
+# Run: bash setup-hooks.sh [--auto-approve|--no-auto-approve]
+#
+# The PreToolUse auto-approve hook is machine-wide, so it is consent-gated:
+#   --auto-approve       install it without asking
+#   --no-auto-approve    skip it, and remove it if a previous run installed it
+#   (neither)            interactive terminal: explain and ask Y/n
+#                        non-interactive: install it (unattended automation
+#                        depends on it) and print a loud notice + removal command
+# HIVE_AUTO_APPROVE=1|0 in the environment acts like the flags (install.sh
+# passes consent through this variable).
 
 set -e
+
+AUTO_APPROVE_MODE=""
+for arg in "$@"; do
+  case "$arg" in
+    --auto-approve)    AUTO_APPROVE_MODE="on" ;;
+    --no-auto-approve) AUTO_APPROVE_MODE="off" ;;
+  esac
+done
+if [ -z "$AUTO_APPROVE_MODE" ]; then
+  case "${HIVE_AUTO_APPROVE:-}" in
+    1) AUTO_APPROVE_MODE="on" ;;
+    0) AUTO_APPROVE_MODE="off" ;;
+  esac
+fi
 
 if ! command -v claude &>/dev/null; then
   echo "Claude Code not found. Skipping Claude hook installation."
@@ -71,9 +94,61 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
+# ── Auto-approve consent ─────────────────────────────────────────────
+# Decide whether the machine-wide PreToolUse auto-approve hook gets
+# installed. Re-runs with the hook already present keep it without asking
+# (verify-and-repair); withdrawing consent is always --no-auto-approve.
+
+AUTO_APPROVE_ALREADY_INSTALLED=0
+if grep -q 'auto-approve\.sh' "$SETTINGS" 2>/dev/null; then
+  AUTO_APPROVE_ALREADY_INSTALLED=1
+fi
+
+if [ -z "$AUTO_APPROVE_MODE" ]; then
+  if [ "$AUTO_APPROVE_ALREADY_INSTALLED" -eq 1 ]; then
+    # Previously consented (hook is present) — keep and repair it silently.
+    AUTO_APPROVE_MODE="on"
+  elif [ -t 0 ]; then
+    echo ""
+    echo "  Hive wants to install a machine-wide Claude Code auto-approve hook."
+    echo ""
+    echo "  What it does:"
+    echo "    - Adds a PreToolUse hook to ~/.claude/settings.json that approves"
+    echo "      EVERY tool call (file edits, shell commands, network access) in"
+    echo "      EVERY Claude Code session on this machine, including sessions"
+    echo "      that have nothing to do with Hive."
+    echo "    - Claude Code will stop showing permission prompts anywhere."
+    echo "    - It also blocks plan mode so agents execute directly, and it"
+    echo "      delivers Hive inbox messages on Windows."
+    echo ""
+    echo "  Hive's unattended automation (auto-pilot, queued dispatch, satellite"
+    echo "  messaging) depends on it. Without it, agents stall at permission"
+    echo "  prompts until you approve them by hand."
+    echo ""
+    echo "  You can remove it at any time:"
+    echo "    bash $REPO_ROOT/setup-hooks.sh --no-auto-approve"
+    echo ""
+    printf "  Install the machine-wide auto-approve hook? [Y/n] "
+    read -r AUTO_APPROVE_REPLY || AUTO_APPROVE_REPLY=""
+    case "$AUTO_APPROVE_REPLY" in
+      n|N|no|NO|No) AUTO_APPROVE_MODE="off" ;;
+      *)            AUTO_APPROVE_MODE="on" ;;
+    esac
+  else
+    # Non-interactive (piped install, CI, agent-driven). Unattended automation
+    # depends on the hook, so install it — but never silently: a loud notice
+    # with the exact removal command prints below.
+    AUTO_APPROVE_MODE="on"
+  fi
+fi
+
+AUTO_APPROVE_ENABLED=0
+[ "$AUTO_APPROVE_MODE" = "on" ] && AUTO_APPROVE_ENABLED=1
+
 SETTINGS="$SETTINGS" \
 IDENTITY_CMD="$IDENTITY_DST" \
 AUTO_APPROVE_CMD="$AUTO_APPROVE_CMD" \
+AUTO_APPROVE_ENABLED="$AUTO_APPROVE_ENABLED" \
 DAEMON_URL="$DAEMON_URL" \
 HIVE_TOKEN="$TOKEN" \
 node <<'NODE'
@@ -82,6 +157,7 @@ const fs = require('fs');
 const settingsPath = process.env.SETTINGS;
 const identityCmd = process.env.IDENTITY_CMD;
 const autoApproveCmd = process.env.AUTO_APPROVE_CMD;
+const autoApproveEnabled = process.env.AUTO_APPROVE_ENABLED === '1';
 const daemonUrl = process.env.DAEMON_URL;
 const token = process.env.HIVE_TOKEN;
 const authedHookUrl = `${daemonUrl}/hook?token=${token}`;
@@ -155,7 +231,16 @@ const isAutoApproveHook = (hook) =>
 upsertHook('UserPromptSubmit', { type: 'command', command: identityCmd }, isIdentityHook);
 upsertHook('UserPromptSubmit', { type: 'http', url: authedHookUrl }, isHiveHttpHook);
 upsertHook('Notification', { type: 'http', url: authedHookUrl }, isHiveHttpHook);
-upsertHook('PreToolUse', { type: 'command', command: autoApproveCmd }, isAutoApproveHook);
+if (autoApproveEnabled) {
+  upsertHook('PreToolUse', { type: 'command', command: autoApproveCmd }, isAutoApproveHook);
+} else {
+  // Consent withdrawn or never given: strip any auto-approve hook.
+  for (const entry of Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []) {
+    if (Array.isArray(entry?.hooks)) {
+      entry.hooks = entry.hooks.filter((hook) => !isAutoApproveHook(hook));
+    }
+  }
+}
 upsertHook('PreToolUse', { type: 'http', url: authedHookUrl }, isHiveHttpHook);
 upsertHook('PostToolUse', { type: 'http', url: authedHookUrl }, isHiveHttpHook);
 upsertHook('Stop', { type: 'http', url: authedHookUrl }, isHiveHttpHook);
@@ -166,8 +251,42 @@ fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 console.log(`Updated ${settingsPath}`);
 console.log('Installed Hive hooks for UserPromptSubmit, PreToolUse, PostToolUse, Notification, and Stop.');
 console.log(`Identity hook: ${identityCmd}`);
-console.log(`Auto-approve hook: ${autoApproveCmd}`);
+if (autoApproveEnabled) {
+  console.log(`Auto-approve hook: ${autoApproveCmd}`);
+} else {
+  console.log('Auto-approve hook: not installed (removed if previously present)');
+}
 NODE
+
+# ── Auto-approve notice (always loud, never silent) ──────────────────
+
+if [ "$AUTO_APPROVE_ENABLED" -eq 1 ]; then
+  echo ""
+  echo "  =============================================================="
+  echo "  NOTICE: machine-wide auto-approve hook installed"
+  echo ""
+  echo "  ~/.claude/settings.json now has a PreToolUse hook that approves"
+  echo "  EVERY tool call in EVERY Claude Code session on this machine."
+  echo "  Claude Code will not show permission prompts anywhere, including"
+  echo "  sessions that have nothing to do with Hive. Plan mode is blocked."
+  echo ""
+  echo "  Why: Hive's unattended agents (auto-pilot, queued dispatch,"
+  echo "  satellite messaging on Windows) stall at permission prompts"
+  echo "  without it."
+  echo ""
+  echo "  Remove it with this one line:"
+  echo "  bash $REPO_ROOT/setup-hooks.sh --no-auto-approve"
+  echo "  =============================================================="
+  echo ""
+else
+  echo ""
+  echo "  Auto-approve hook NOT installed (removed if previously present)."
+  echo "  Claude Code permission prompts stay on. Hive's unattended"
+  echo "  automation (auto-pilot, queued dispatch, Windows inbox delivery)"
+  echo "  will stall at permission prompts until you approve them by hand."
+  echo "  Enable later: bash $REPO_ROOT/setup-hooks.sh --auto-approve"
+  echo ""
+fi
 
 # --- Install dispatch templates ---
 # Copy CLAUDE.md and AGENTS.md templates so every agent knows
