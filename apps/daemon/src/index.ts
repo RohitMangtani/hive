@@ -8,7 +8,6 @@ import { SessionStreamer } from "./session-stream.js";
 import { WsServer } from "./ws-server.js";
 import { ProcessDiscovery } from "./discovery.js";
 import { AutoPilot } from "./auto-pilot.js";
-import { Watchdog } from "./watchdog.js";
 import { StateStore } from "./state-store.js";
 import { NotificationManager } from "./notifications.js";
 import { WebPushManager } from "./web-push.js";
@@ -149,7 +148,6 @@ if (satFlagIdx !== -1) {
   ws.setPushManager(pushMgr);
   ws.setRevertHistory(revertHistory);
   const autoPilot = new AutoPilot(telemetry, streamer, platform.terminal);
-  const watchdog = new Watchdog(telemetry);
   const collector = new Collector();
   const outbox = new OutboxScanner(telemetry);
   const stateStore = new StateStore();
@@ -209,7 +207,6 @@ if (satFlagIdx !== -1) {
     telemetry.writeWorkersFile();
     ws.pushState();
     autoPilot.tick();
-    watchdog.tick();
     collector.tick();
     outbox.tick();
     devices.tick();

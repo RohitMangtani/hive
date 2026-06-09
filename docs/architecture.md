@@ -24,8 +24,8 @@ This document describes how data flows through Hive, from agent process discover
 │  │  Auto-Pilot    REST API      Satellite Relay      │  │    │
 │  │  (unstick)    (port 3001)    (federation)         │  │    │
 │  │                    │                              │  │    │
-│  │  Watchdog      Coordination   Review Manager      │  │    │
-│  │  (self-heal)   (locks/pad)    (auto-detect)       │  │    │
+│  │  Coordination  Review Manager                     │  │    │
+│  │  (locks/pad)   (auto-detect)                      │  │    │
 │  └──────────────────────────────────────────────────┘  │    │
 │                                                         │    │
 │                              ┌───────────────────┐      │    │
@@ -149,7 +149,6 @@ Human actions (messages sent, agents spawned, prompts approved) are broadcast as
 | `ws-server.ts` | WebSocket, dashboard commands, satellite federation | telemetry, tty-input, discovery |
 | `session-stream.ts` | JSONL tail following, chat history parsing | fs.watch, multi-format (Claude/Codex/Gemini) |
 | `auto-pilot.ts` | Auto-respond to stuck prompts (3s grace) | telemetry, tty-input |
-| `watchdog.ts` | Anomaly detection, adaptive suppression, auto-learn | telemetry |
 | `user-registry.ts` | Named users, role-based tokens, presence tracking | standalone |
 
 ### Extracted Modules

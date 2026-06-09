@@ -86,7 +86,6 @@ See [docs/architecture.md](docs/architecture.md) for a detailed data flow explan
 ### Good first issues
 
 - Add tests for `session-stream.ts` (JSONL parsing for different agent formats)
-- Add tests for `watchdog.ts` (anomaly detection logic)
 - Improve error messages in the REST API (some return raw error strings)
 - Add JSDoc comments to protocol types in `packages/protocol/`
 

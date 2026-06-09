@@ -21,7 +21,6 @@ import { SessionStreamer } from "./session-stream.js";
 import { ProcessManager } from "./process-mgr.js";
 import { patchHookUrls } from "./auth.js";
 import { AutoPilot } from "./auto-pilot.js";
-import { Watchdog } from "./watchdog.js";
 import type { WorkerState } from "./types.js";
 import { resolveExecCwd, runShellExec } from "./shell-exec.js";
 import {
@@ -123,7 +122,6 @@ export class SatelliteClient {
   private readonly federation: FederationSocketClient<SatelliteDownMessage, SatelliteUpMessage>;
   private readonly runtimePlatform: LoadedPlatform;
   private autoPilot: AutoPilot | null = null;
-  private watchdog: Watchdog | null = null;
   private chatSubs = new Map<string, string>(); // prefixed workerId → subKey
   private tickInterval: ReturnType<typeof setInterval> | null = null;
   // API relay: pending requests awaiting response from primary
@@ -272,9 +270,8 @@ export class SatelliteClient {
     // Install CLAUDE.md so local agents know about the Hive API
     this.installClaudeMd();
 
-    // Auto-pilot + watchdog  --  same as primary, runs locally on satellite
+    // Auto-pilot runs locally on satellite (matching primary)
     this.autoPilot = new AutoPilot(this.telemetry, this.streamer, this.runtimePlatform.terminal);
-    this.watchdog = new Watchdog(this.telemetry);
 
     // Initial discovery scan
     this.discovery.scan();
@@ -285,14 +282,13 @@ export class SatelliteClient {
     // Connect to primary through the dedicated federation transport.
     this.federation.start();
 
-    // Periodic: full tick loop matching primary (discovery, status, auto-pilot, watchdog)
+    // Periodic: full tick loop matching primary (discovery, status, auto-pilot)
     this.tickInterval = setInterval(() => {
       this.telemetry.tick();
       this.procMgr.tick();
       this.discovery.scan();
       this.telemetry.writeWorkersFile();
       this.autoPilot?.tick();
-      this.watchdog?.tick();
       this.reportWorkers();
     }, 3_000);
   }

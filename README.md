@@ -324,7 +324,7 @@ The system solves four problems at once:
 - **Multi-machine** -connect additional Macs as satellites. Agents from all machines appear in one dashboard. Messages, tasks, and coordination route transparently across the network.
 - **Auto-discovery** -start any supported agent in a terminal and it appears on the dashboard within 3 seconds. No registration, no config.
 - **Spawn approval gate** -every new agent requires a dashboard "Approve" click before receiving its task. You see what is about to start and you control when it begins.
-- **Auto-pilot** -permission prompts auto-approve after a 3-second grace window. Stuck loops get caught and the watchdog dispatches idle agents to intervene. Three failures escalate to a yellow card the autopilot will not touch.
+- **Auto-pilot** -permission prompts auto-approve after a 3-second grace window. Three failures escalate to a yellow card the autopilot will not touch.
 - **Auto-update cascade** -when code is pushed, the primary rebuilds and all satellites auto-pull, rebuild, and restart. Fleet stays in sync without manual intervention.
 - **Pipeline health check** -`GET /api/check` verifies the entire fleet: daemon, build, auth, discovery, workers, hooks, status accuracy, satellite versions. One call, pass or fail.
 - **Diagnostics panel** -"Health" button on the dashboard shows fleet checks, stuck worker details, session routing, hook times, and signal timelines. Debug from your phone.
@@ -418,9 +418,6 @@ Two channels, zero setup:
 - **Web Push (iOS/Android/desktop browser)** -when an agent finishes work (green to red), a push notification is sent to all subscribed devices. 15-second cooldown per agent. The dashboard is a PWA. Add it to your Home Screen, tap the bell icon in the header, and allow notifications. VAPID keys are auto-generated on first daemon start (`~/.hive/vapid.json`). Subscriptions persist across daemon restarts (`~/.hive/push-subs.json`).
 
 Configure at `~/.hive/notifications.json`. Set `pushOnComplete: false` to disable completion notifications. Defaults work out of the box.
-
-### Watchdog
-Monitors agents for stuck loops (same tool called 6+ times in a row). Detects when agents are spinning on a problem and escalates to the dashboard. When a stuck loop is detected, the watchdog auto-dispatches a fix task to an idle agent with context about the anomaly. Safety guards: never dispatches to the anomaly's own TTY, max 3 attempts per anomaly, and adaptive suppression to avoid flooding the fleet.
 
 ## API Reference
 
@@ -658,7 +655,6 @@ Daemon (Node.js, port 3001 + 3002)
 ├── Telemetry     -receives hook events and inferred signals, maintains worker state
 ├── Auto-pilot    -detects stuck prompts, auto-approves via send-return
 ├── Arrange       -detects terminal positions, assigns slots by screen location
-├── Watchdog      -detects stuck loops, escalates to dashboard
 ├── State store   -snapshots daemon state every 30s, restores on restart
 ├── Notifications -macOS native alerts when agents go stuck
 ├── Task queue    -global work queue, auto-dispatches to idle agents
@@ -686,7 +682,6 @@ Dashboard (Next.js, port 3000 -installable as PWA)
 | `apps/daemon/src/arrange-windows.ts` | Window position detection and slot assignment |
 | `apps/daemon/src/api-routes.ts` | All REST API endpoints |
 | `apps/daemon/src/ws-server.ts` | WebSocket server for dashboard |
-| `apps/daemon/src/watchdog.ts` | Stuck loop detection |
 | `apps/daemon/src/state-store.ts` | Snapshot persistence across restarts |
 | `~/.hive/identity.sh` | Claude hook: injects slot ID + peer summary on every prompt |
 | `~/.hive/sessions/` | Claude TTY→session marker files written by `identity.sh` |
