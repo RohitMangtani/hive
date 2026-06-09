@@ -137,30 +137,24 @@ function findSessionFile(model: string, startedAt: number, cwd: string): string 
 
 /**
  * Get the current working directory of a process on Windows.
- * Uses Get-CimInstance CommandLine heuristic and falls back to HOME.
+ * Uses a Get-CimInstance CommandLine heuristic and falls back to HOME.
+ *
+ * Reading another process's true CWD on Windows requires native code
+ * (NtQueryInformationProcess/PEB) -- no stock PowerShell API exposes it.
+ * The CommandLine heuristic catches launches that embed the directory
+ * (--cwd/--dir flags, `cd /d`); everything else degrades to HOME, which
+ * keeps project identity stable ("home") rather than mis-attributing the
+ * agent to its binary's install dir (e.g. C:\Program Files\nodejs).
  */
 function getProcessCwd(pid: number): string {
   try {
-    // Best effort: ask PowerShell for the process's current directory
-    // This uses the .NET method which reads the PEB (Process Environment Block)
-    const out = execFileSync("powershell", [
-      "-NoProfile", "-Command",
-      `try { $p = [System.Diagnostics.Process]::GetProcessById(${pid}); $m = $p.MainModule; if ($m) { Split-Path $m.FileName -Parent } } catch {}`,
-    ], { encoding: "utf-8", timeout: 3000 }).trim();
-
-    // MainModule.FileName gives us the binary path (e.g. C:\...\node.exe)
-    // For agents, the CWD is more useful. Try reading it from the
-    // process's command line via WMI.
     const cwdOut = execFileSync("powershell", [
       "-NoProfile", "-Command",
-      // wmic can sometimes give us the working directory via the command line
-      // but the most reliable Windows method needs native code. Fall back to
-      // checking if the command has a -d or --cwd flag, or use HOME.
       `$cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue).CommandLine; if ($cmd -match '--?(?:cwd|directory|dir)\\s+[''"]?([^''"\\s]+)') { $Matches[1] } elseif ($cmd -match 'cd\\s+/d\\s+[''"]?([^''"&]+)') { $Matches[1] }`,
     ], { encoding: "utf-8", timeout: 3000 }).trim();
 
     if (cwdOut && cwdOut.length > 2) return cwdOut;
-    return out || HOME;
+    return HOME;
   } catch {
     return HOME;
   }

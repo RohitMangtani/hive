@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -59,7 +59,7 @@ export function acquireRuntimeSingleton(
     ...(options?.primaryUrl ? { primaryUrl: options.primaryUrl } : {}),
   };
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const fd = openSync(path, "wx", 0o600);
       try {
@@ -93,12 +93,35 @@ export function acquireRuntimeSingleton(
       }
 
       if (!existing || !isPidAlive(existing.pid)) {
+        // Stale-lock takeover. A bare unlink-then-retry is a TOCTOU race:
+        // two starters can both read the same stale pid, and the slower
+        // unlink would delete the faster starter's FRESH lock, letting both
+        // acquire. Instead, claim the stale file by renaming it aside --
+        // rename succeeds for exactly one claimant (the loser gets ENOENT) --
+        // then re-verify what was actually captured before discarding it.
+        const aside = `${path}.stale-${process.pid}-${attempt}`;
         try {
-          unlinkSync(path);
-          continue;
+          renameSync(path, aside);
         } catch {
-          // Another process may have replaced it. Fall through to conflict.
+          // Lost the takeover race (or the owner released). Retry: either
+          // the winner's fresh lock now exists (conflict on the next pass)
+          // or the path is free (the wx create succeeds).
+          continue;
         }
+
+        const captured = readMetadata(aside);
+        if (captured && captured.pid !== process.pid && isPidAlive(captured.pid)) {
+          // The lock was replaced by a live process between our read and our
+          // rename -- we grabbed a fresh lock by mistake. Restore it without
+          // clobbering anything newer (link fails with EEXIST if the lock
+          // path was recreated meanwhile), then report the conflict.
+          try { linkSync(aside, path); } catch { /* newer lock already present */ }
+          try { unlinkSync(aside); } catch { /* best-effort cleanup */ }
+          return { ok: false, conflict: { path, metadata: captured } };
+        }
+
+        try { unlinkSync(aside); } catch { /* best-effort cleanup */ }
+        continue;
       }
 
       return { ok: false, conflict: { path, metadata: existing } };

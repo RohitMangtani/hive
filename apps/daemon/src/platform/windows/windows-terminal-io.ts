@@ -13,8 +13,17 @@
  *    on PreToolUse) check the inbox and deliver messages as additionalContext
  * 3. The agent sees the message in its next system-reminder and processes it
  *
- * This is reliable, requires no window focus or console attachment, and works
- * with any terminal emulator (Windows Terminal, cmd.exe, PowerShell, etc.).
+ * Delivery latency is "next hook fire": an idle agent picks the message up
+ * on its next prompt or tool call. Do not "speed this up" by spawning
+ * `claude -p -c` -- a headless turn continues the most recent session in its
+ * cwd, which is either an unrelated session (when spawned in $HOME) or the
+ * live agent's own transcript (when spawned in the agent's cwd), corrupting it.
+ *
+ * Keystrokes and selections (enter/down/up for permission and AskUserQuestion
+ * prompts) are NOT deliverable on Windows: hooks never fire while the agent is
+ * blocked at an interactive prompt, so there is no consumer that could apply
+ * them. sendKeystroke/sendSelection report ok:false so the dashboard and
+ * auto-pilot surface the truth instead of pretending the prompt was answered.
  *
  * readContent() attempts several strategies to read terminal output:
  *   1. Check if the process has a --log-file / -log argument and read the tail
@@ -43,33 +52,15 @@ function ensureInboxDir(): string {
 /**
  * Write a message to the inbox for a target PID.
  * The file acts as the handoff point — hooks running inside the target
- * agent's Claude Code process will pick it up and inject it as additionalContext.
- *
- * For Claude agents, also spawns `claude -p -c "message"` in the agent's
- * working directory to continue the conversation immediately (instant delivery).
- * The inbox file is the fallback for non-Claude agents or if the spawn fails.
+ * agent's Claude Code process pick it up on their next fire (UserPromptSubmit
+ * or PreToolUse) and inject it as additionalContext. The hook deletes the
+ * file once consumed; nothing else may unlink it, or delivery is lost.
  */
-function writeToInbox(pid: string, text: string, cwd?: string): PlatformSendResult {
+function writeToInbox(pid: string, text: string): PlatformSendResult {
   try {
     const inboxDir = ensureInboxDir();
     const msgFile = join(inboxDir, `pid_${pid}.msg`);
     writeFileSync(msgFile, text, { encoding: "utf-8" });
-
-    // Instant delivery: spawn `claude -p -c "message"` which continues the
-    // same conversation. The running Claude sees the new turn via session sync.
-    // Fire-and-forget: inbox file is the fallback if this fails.
-    try {
-      const { execFile: ef } = require("child_process") as typeof import("child_process");
-      ef("claude.cmd", ["-p", "-c", text], {
-        cwd: homedir(),
-        timeout: 120_000,
-        windowsHide: true,
-      }, (err) => {
-        if (err) console.log(`[win-io] claude -p -c: ${(err.message || "").slice(0, 100)}`);
-        else try { require("fs").unlinkSync(msgFile); } catch { /* consumed by hook */ }
-      });
-    } catch { /* claude CLI not available — inbox file is fallback */ }
-
     return { ok: true };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -77,21 +68,13 @@ function writeToInbox(pid: string, text: string, cwd?: string): PlatformSendResu
   }
 }
 
-/**
- * Write a keystroke name to the inbox for a target PID.
- * Used for selection prompts (enter/down/up).
- */
-function writeKeystrokeToInbox(pid: string, key: string): PlatformSendResult {
-  try {
-    const inboxDir = ensureInboxDir();
-    const keyFile = join(inboxDir, `pid_${pid}.key`);
-    writeFileSync(keyFile, key, { encoding: "utf-8" });
-    return { ok: true };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: `Inbox keystroke write failed: ${msg.slice(0, 150)}` };
-  }
-}
+// Keystroke/selection delivery has no working transport on Windows. The old
+// .key inbox files were deleted unread by identity.sh, silently dropping every
+// dashboard approval. Report failure honestly instead.
+const KEYSTROKE_UNSUPPORTED: PlatformSendResult = {
+  ok: false,
+  error: "Keystroke delivery is not supported on Windows -- answer the prompt in the terminal",
+};
 
 export class WindowsTerminalIO implements TerminalIO {
   private _sendInFlight = false;
@@ -128,45 +111,22 @@ export class WindowsTerminalIO implements TerminalIO {
     }
   }
 
-  sendKeystroke(tty: string, key: "enter" | "down" | "up"): PlatformSendResult {
+  sendKeystroke(tty: string, _key: "enter" | "down" | "up"): PlatformSendResult {
     const pid = extractPid(tty);
     if (!pid) return { ok: false, error: `Invalid tty identifier: ${tty}` };
-
-    this._sendInFlight = true;
-    try {
-      return writeKeystrokeToInbox(pid, key);
-    } finally {
-      this._sendInFlight = false;
-    }
+    return { ...KEYSTROKE_UNSUPPORTED };
   }
 
-  sendKeystrokeAsync(tty: string, key: "enter" | "down" | "up"): Promise<PlatformSendResult> {
+  sendKeystrokeAsync(tty: string, _key: "enter" | "down" | "up"): Promise<PlatformSendResult> {
     const pid = extractPid(tty);
     if (!pid) return Promise.resolve({ ok: false, error: `Invalid tty identifier: ${tty}` });
-
-    this._sendInFlight = true;
-    try {
-      return Promise.resolve(writeKeystrokeToInbox(pid, key));
-    } finally {
-      this._sendInFlight = false;
-    }
+    return Promise.resolve({ ...KEYSTROKE_UNSUPPORTED });
   }
 
-  sendSelection(tty: string, optionIndex: number): PlatformSendResult {
+  sendSelection(tty: string, _optionIndex: number): PlatformSendResult {
     const pid = extractPid(tty);
     if (!pid) return { ok: false, error: `Invalid tty identifier: ${tty}` };
-
-    const count = Math.max(0, optionIndex);
-    this._sendInFlight = true;
-    try {
-      for (let i = 0; i < count; i++) {
-        const r = writeKeystrokeToInbox(pid, "down");
-        if (!r.ok) return r;
-      }
-      return writeKeystrokeToInbox(pid, "enter");
-    } finally {
-      this._sendInFlight = false;
-    }
+    return { ...KEYSTROKE_UNSUPPORTED };
   }
 
   readContent(tty: string): string | null {

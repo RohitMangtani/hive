@@ -64,6 +64,75 @@ function resolveSpawnCommand(model: string, initialMessage?: string): string {
 
 const useWT = hasWindowsTerminal();
 
+/**
+ * Build the PowerShell script for detectQuadrants. Exported so tests can
+ * assert the generated text.
+ *
+ * The script:
+ * 1. Gets the primary screen working area for midpoint calculations
+ * 2. For each PID, finds the window handle and reads its position via GetWindowRect
+ * 3. Maps each window to a quadrant based on its center position in a 2x2 grid
+ *
+ * Constraints baked into the script text:
+ * - $PID is a read-only PowerShell automatic variable. Assigning it (e.g. as a
+ *   foreach loop variable) throws "Cannot overwrite variable PID", so the loop
+ *   variable must be named something else ($targetPid).
+ * - When several agent PIDs resolve to the same window (Windows Terminal tabs
+ *   in one wt.exe window), only the first PID emits a line. Duplicate rawSlots
+ *   for one window would make telemetry's drift/snap-back logic thrash.
+ */
+export function buildDetectQuadrantsScript(pids: string[]): string {
+  const pidList = pids.join(",");
+
+  return `
+Add-Type @"
+  using System;
+  using System.Runtime.InteropServices;
+  public class HiveDetect {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  }
+"@
+Add-Type -AssemblyName System.Windows.Forms
+
+$workArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$midX = $workArea.X + [math]::Floor($workArea.Width / 2)
+$midY = $workArea.Y + [math]::Floor($workArea.Height / 2)
+
+$pids = @(${pidList})
+$seenHwnd = @{}
+foreach ($targetPid in $pids) {
+  $proc = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+  if (-not $proc -or $proc.MainWindowHandle -eq [IntPtr]::Zero) {
+    # Try parent process (conhost -> terminal)
+    $parentId = (Get-CimInstance Win32_Process -Filter "ProcessId=$targetPid" -ErrorAction SilentlyContinue).ParentProcessId
+    if ($parentId) { $proc = Get-Process -Id $parentId -ErrorAction SilentlyContinue }
+    if (-not $proc -or $proc.MainWindowHandle -eq [IntPtr]::Zero) { continue }
+  }
+  $hwnd = $proc.MainWindowHandle
+  $hwndKey = $hwnd.ToString()
+  if ($seenHwnd.ContainsKey($hwndKey)) { continue }
+  $seenHwnd[$hwndKey] = $true
+  $rect = New-Object HiveDetect+RECT
+  $ok = [HiveDetect]::GetWindowRect($hwnd, [ref]$rect)
+  if (-not $ok) { continue }
+  $cx = [math]::Floor(($rect.Left + $rect.Right) / 2)
+  $cy = [math]::Floor(($rect.Top + $rect.Bottom) / 2)
+  # Quadrant: top-left=1, top-right=2, bottom-left=3, bottom-right=4
+  if ($cx -lt $midX -and $cy -lt $midY) { $q = 1 }
+  elseif ($cx -ge $midX -and $cy -lt $midY) { $q = 2 }
+  elseif ($cx -lt $midX -and $cy -ge $midY) { $q = 3 }
+  else { $q = 4 }
+  Write-Output "$targetPid$([char]9)$q"
+}
+`;
+}
+
+// One-shot flag so detectQuadrants failures show up in the log without
+// spamming it on every 1.5s position-detect tick.
+let loggedDetectQuadrantsError = false;
+
 export class WindowsWindowManager implements WindowManager {
   spawnTerminal(
     project: string,
@@ -233,52 +302,8 @@ foreach ($slot in $slots) {
   ): void {
     if (ttys.length === 0) return;
 
-    // Build a PowerShell script that:
-    // 1. Gets the primary screen working area for midpoint calculations
-    // 2. For each PID, finds the window handle and reads its position via GetWindowRect
-    // 3. Maps each window to a quadrant based on its center position in a 2x2 grid
     const pids = ttys.map((tty) => tty.replace(/^pid:/, ""));
-    const pidList = pids.join(",");
-
-    const psScript = `
-Add-Type @"
-  using System;
-  using System.Runtime.InteropServices;
-  public class HiveDetect {
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-  }
-"@
-Add-Type -AssemblyName System.Windows.Forms
-
-$workArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-$midX = $workArea.X + [math]::Floor($workArea.Width / 2)
-$midY = $workArea.Y + [math]::Floor($workArea.Height / 2)
-
-$pids = @(${pidList})
-foreach ($pid in $pids) {
-  $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-  if (-not $proc -or $proc.MainWindowHandle -eq [IntPtr]::Zero) {
-    # Try parent process (conhost -> terminal)
-    $parentId = (Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction SilentlyContinue).ParentProcessId
-    if ($parentId) { $proc = Get-Process -Id $parentId -ErrorAction SilentlyContinue }
-    if (-not $proc -or $proc.MainWindowHandle -eq [IntPtr]::Zero) { continue }
-  }
-  $hwnd = $proc.MainWindowHandle
-  $rect = New-Object HiveDetect+RECT
-  $ok = [HiveDetect]::GetWindowRect($hwnd, [ref]$rect)
-  if (-not $ok) { continue }
-  $cx = [math]::Floor(($rect.Left + $rect.Right) / 2)
-  $cy = [math]::Floor(($rect.Top + $rect.Bottom) / 2)
-  # Quadrant: top-left=1, top-right=2, bottom-left=3, bottom-right=4
-  if ($cx -lt $midX -and $cy -lt $midY) { $q = 1 }
-  elseif ($cx -ge $midX -and $cy -lt $midY) { $q = 2 }
-  elseif ($cx -lt $midX -and $cy -ge $midY) { $q = 3 }
-  else { $q = 4 }
-  Write-Output "$pid$([char]9)$q"
-}
-`;
+    const psScript = buildDetectQuadrantsScript(pids);
 
     try {
       const output = execFileSync("powershell", ["-NoProfile", "-Command", psScript], {
@@ -318,8 +343,14 @@ foreach ($pid in $pids) {
       if (result.size > 0) {
         callback(result, rawSlots);
       }
-    } catch {
-      // detectQuadrants is best-effort -- don't crash if PowerShell fails
+    } catch (err: unknown) {
+      // detectQuadrants is best-effort -- don't crash if PowerShell fails,
+      // but surface the first failure so it isn't silently swallowed.
+      if (!loggedDetectQuadrantsError) {
+        loggedDetectQuadrantsError = true;
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(`[win-wm] detectQuadrants failed: ${msg.slice(0, 200)}`);
+      }
     }
   }
 

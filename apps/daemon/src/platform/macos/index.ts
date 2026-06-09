@@ -1,4 +1,4 @@
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import { promisify } from "util";
 import { ProcessDiscovery } from "../../discovery.js";
 import {
@@ -85,10 +85,70 @@ end tell
   }
 }
 
+/**
+ * Synchronous System Events keystroke send. Mirrors the gemini branch of
+ * sendInputToTtyAsync (tty-input.ts): Gemini CLI uses ink TextInput that only
+ * reads raw keypresses, so do-script text injection never reaches it. Sync
+ * callers (auto-pilot, telemetry sendToWorker) pass the model, so they need
+ * the same branch the async path has.
+ */
+function sendKeystrokeTextToTtySync(tty: string, cleaned: string): { ok: boolean; error?: string } {
+  const device = tty.startsWith("/dev/") ? tty : `/dev/${tty}`;
+
+  // Escape backslashes and double quotes for AppleScript string
+  const escaped = cleaned.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
+  const script = `
+tell application "Terminal"
+  set targetTTY to "${device}"
+  set targetTab to missing value
+  set targetWin to missing value
+  repeat with w in windows
+    repeat with t in tabs of w
+      if tty of t is targetTTY then
+        set targetTab to t
+        set targetWin to w
+        exit repeat
+      end if
+    end repeat
+    if targetTab is not missing value then exit repeat
+  end repeat
+  if targetTab is missing value then error "TTY not found in Terminal.app"
+  set selected of targetTab to true
+  set index of targetWin to 1
+  activate
+end tell
+delay 0.3
+tell application "System Events"
+  tell process "Terminal"
+    keystroke "${escaped}"
+    delay 0.1
+    key code 36
+  end tell
+end tell
+`;
+
+  try {
+    execFileSync("/usr/bin/osascript", ["-e", script], {
+      timeout: 15000,
+      encoding: "utf-8",
+    });
+    return { ok: true };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Keystroke send failed: ${msg.slice(0, 180)}` };
+  }
+}
+
 class MacOSTerminalIO implements TerminalIO {
   constructor(private readonly discovery: MacDiscoveryShape) {}
 
-  sendText(tty: string, text: string): { ok: boolean; error?: string } {
+  sendText(tty: string, text: string, model?: string): { ok: boolean; error?: string } {
+    if (model === "gemini") {
+      const cleaned = text.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+      if (!cleaned) return { ok: false, error: "Empty message" };
+      return sendKeystrokeTextToTtySync(tty, cleaned);
+    }
     return sendInputToTty(tty, text);
   }
 

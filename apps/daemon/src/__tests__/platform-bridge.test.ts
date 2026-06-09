@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildDetectQuadrantsScript } from "../platform/windows/windows-window-manager.js";
 
 function createTerminalMock() {
   return {
@@ -72,5 +73,30 @@ describe("platform bridge", () => {
     expect(macTerminal.sendSelection).toHaveBeenCalledWith("tty2", 1);
     expect(macTerminal.sendKeystroke).toHaveBeenCalledWith("tty2", "enter");
     expect(macTerminal.isSendInFlight).toHaveBeenCalled();
+  });
+});
+
+describe("WindowsWindowManager detect-quadrants script", () => {
+  // $PID is a documented read-only PowerShell automatic variable. Using it
+  // as a loop variable throws "Cannot overwrite variable PID", the loop never
+  // iterates, and quadrant detection fails silently. The generated script
+  // must never reference bare $pid (the distinct names $pids/$targetPid are fine).
+  it("never assigns the read-only PowerShell automatic variable $pid", () => {
+    const script = buildDetectQuadrantsScript(["1234", "5678"]);
+    expect(script).toContain("$pids = @(1234,5678)");
+    expect(script).not.toMatch(/\$pid\b/i);
+    expect(script).toContain("foreach ($targetPid in $pids)");
+    // The output line must echo the loop variable, not the PS host's own PID.
+    expect(script).toContain('Write-Output "$targetPid$([char]9)$q"');
+    // The CIM parent lookup must filter on the loop variable too.
+    expect(script).toContain('"ProcessId=$targetPid"');
+  });
+
+  it("dedupes PIDs that resolve to the same window handle", () => {
+    // Multiple WT-tab agents share one wt.exe window; emitting identical
+    // quadrants for all of them would thrash telemetry's snap-back logic.
+    const script = buildDetectQuadrantsScript(["1", "2"]);
+    expect(script).toContain("$seenHwnd = @{}");
+    expect(script).toContain("if ($seenHwnd.ContainsKey($hwndKey)) { continue }");
   });
 });

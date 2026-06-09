@@ -17,12 +17,12 @@ vi.mock("child_process", () => ({
 }));
 
 // Mock fs for process discoverer
-const mockReadFileSync = vi.fn(() => "");
-const mockReaddirSync = vi.fn(() => [] as string[]);
-const mockReadlinkSync = vi.fn(() => "");
-const mockRealpathSync = vi.fn(() => "/home/user/project");
-const mockExistsSync = vi.fn(() => false);
-const mockStatSync = vi.fn(() => ({ mtimeMs: Date.now(), birthtimeMs: Date.now(), isDirectory: () => false }));
+const mockReadFileSync = vi.fn((..._args: unknown[]) => "");
+const mockReaddirSync = vi.fn((..._args: unknown[]) => [] as string[]);
+const mockReadlinkSync = vi.fn((..._args: unknown[]) => "");
+const mockRealpathSync = vi.fn((..._args: unknown[]) => "/home/user/project");
+const mockExistsSync = vi.fn((..._args: unknown[]) => false);
+const mockStatSync = vi.fn((..._args: unknown[]) => ({ mtimeMs: Date.now(), birthtimeMs: Date.now(), isDirectory: () => false }));
 vi.mock("fs", () => ({
   existsSync: (...args: unknown[]) => mockExistsSync(...args),
   readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
@@ -144,6 +144,73 @@ describe("LinuxProcessDiscoverer", () => {
     expect(procs[0].model).toBe("claude");
     expect(procs[0].pid).toBe(1234);
     expect(procs[0].tty).toBe("pts/1");
+  });
+
+  it("discovers claude spawned with arguments by Hive's own Linux spawner", () => {
+    // LinuxWindowManager spawns exactly "claude --enable-auto-mode" -- the
+    // detection regex must match commands with trailing arguments.
+    mockExecFileSync.mockImplementation((cmd: string) => {
+      if (cmd === "ps") {
+        return "  PID  %CPU                  STARTED TTY      COMMAND\n" +
+               " 2345  4.0 Sun Mar 23 01:00:00 2026 pts/3    claude --enable-auto-mode\n";
+      }
+      return "";
+    });
+    mockRealpathSync.mockReturnValue("/home/user/project");
+    mockReaddirSync.mockReturnValue([]);
+
+    const procs = discoverer.findAgentProcesses();
+    expect(procs).toHaveLength(1);
+    expect(procs[0].model).toBe("claude");
+    expect(procs[0].pid).toBe(2345);
+  });
+
+  it("discovers claude spawned with an initial message", () => {
+    // Spawner form with a quoted initial message appended.
+    mockExecFileSync.mockImplementation((cmd: string) => {
+      if (cmd === "ps") {
+        return "  PID  %CPU                  STARTED TTY      COMMAND\n" +
+               " 2346  4.0 Sun Mar 23 01:00:00 2026 pts/4    claude --enable-auto-mode 'fix the build'\n";
+      }
+      return "";
+    });
+    mockRealpathSync.mockReturnValue("/home/user/project");
+    mockReaddirSync.mockReturnValue([]);
+
+    const procs = discoverer.findAgentProcesses();
+    expect(procs).toHaveLength(1);
+    expect(procs[0].model).toBe("claude");
+  });
+
+  it("discovers claude running via the node claude-code CLI wrapper", () => {
+    mockExecFileSync.mockImplementation((cmd: string) => {
+      if (cmd === "ps") {
+        return "  PID  %CPU                  STARTED TTY      COMMAND\n" +
+               " 2347  4.0 Sun Mar 23 01:00:00 2026 pts/5    node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js --enable-auto-mode\n";
+      }
+      return "";
+    });
+    mockRealpathSync.mockReturnValue("/home/user/project");
+    mockReaddirSync.mockReturnValue([]);
+
+    const procs = discoverer.findAgentProcesses();
+    expect(procs).toHaveLength(1);
+    expect(procs[0].model).toBe("claude");
+  });
+
+  it("does not discover processes that merely mention claude in their args", () => {
+    mockExecFileSync.mockImplementation((cmd: string) => {
+      if (cmd === "ps") {
+        return "  PID  %CPU                  STARTED TTY      COMMAND\n" +
+               " 2348  0.5 Sun Mar 23 01:00:00 2026 pts/6    grep claude notes.txt\n" +
+               " 2349  0.5 Sun Mar 23 01:00:00 2026 pts/7    vim claude-notes.md\n";
+      }
+      return "";
+    });
+    mockRealpathSync.mockReturnValue("/home/user/project");
+    mockReaddirSync.mockReturnValue([]);
+
+    expect(discoverer.findAgentProcesses()).toHaveLength(0);
   });
 
   it("discovers codex process", () => {

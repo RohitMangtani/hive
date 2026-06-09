@@ -15,7 +15,11 @@ interface AgentPattern {
 
 function loadAgentPatterns(): AgentPattern[] {
   const builtin: AgentPattern[] = [
-    { regex: /claude\s*$/, model: "claude" },
+    // Match "claude" with or without arguments (the Linux spawner runs
+    // "claude --enable-auto-mode" plus an optional quoted initial message),
+    // and node wrappers like ".../@anthropic-ai/claude-code/cli.js". The
+    // (^|/) left boundary avoids false positives like "grep claude foo".
+    { regex: /(?:(?:^|\/)claude(?:\s|$)|claude-code\/(?:cli|dist))/, model: "claude" },
     { regex: /(?:^|\/)codex(?:\s+(?!app-server)|$)/, model: "codex" },
     { regex: /openclaw(?:\s+tui)?(?:\s|$)/, model: "openclaw" },
     { regex: /(?:^|\/)gemini(?:\s|$)/, model: "gemini" },
@@ -268,7 +272,16 @@ export class LinuxProcessDiscoverer implements ProcessDiscoverer {
         if (!parsed) continue;
         if (parsed.pid === process.pid) continue;
         if (parsed.tty === "?" || parsed.tty === "??") continue;
-        if (/\bnode\s+/.test(parsed.command) && !parsed.command.endsWith("claude") && !/(?:^|\/)gemini(?:\s|$)/.test(parsed.command)) {
+        // Skip generic node wrappers, but keep node processes that ARE the
+        // agent: bare "node ... claude" and the claude-code CLI entry point
+        // (mirrors the Windows claude-code[/\\](cli|dist) check -- a loose
+        // \bclaude\b here would re-admit MCP servers and helper scripts).
+        if (
+          /\bnode\s+/.test(parsed.command) &&
+          !parsed.command.endsWith("claude") &&
+          !/claude-code\/(?:cli|dist)/.test(parsed.command) &&
+          !/(?:^|\/)gemini(?:\s|$)/.test(parsed.command)
+        ) {
           continue;
         }
 
