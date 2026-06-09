@@ -57,6 +57,7 @@ function createServer(initialWorkers: unknown[] = []) {
     getReviews() {
       return [];
     },
+    sendToWorkerAsync: vi.fn(async () => ({ ok: true, queued: false })),
   };
 
   const procMgr = {
@@ -70,13 +71,33 @@ function createServer(initialWorkers: unknown[] = []) {
     nudge: vi.fn(),
   };
 
+  // Inert stubs: real UserRegistry/ReplayManager constructors touch ~/.hive.
+  const userRegistry = {
+    authenticate: vi.fn(() => null),
+    getAll: vi.fn(() => []),
+    createUser: vi.fn((name: string, role: string) => ({
+      id: "u_test",
+      name,
+      role,
+      token: "created-token",
+      createdAt: 0,
+    })),
+    removeUser: vi.fn(() => false),
+  };
+  const replayManager = {
+    list: vi.fn(() => []),
+    record: vi.fn(),
+  } as never;
+
   const server = new WsServer(
     telemetry as never,
     procMgr as never,
     streamer as never,
     3002,
     "token",
-    "viewer-token"
+    "viewer-token",
+    userRegistry as never,
+    replayManager
   ) as unknown as {
     clients: Set<{ readyState: number; send: (data: string) => void }>;
     pushState: () => void;
@@ -85,6 +106,9 @@ function createServer(initialWorkers: unknown[] = []) {
   return {
     server,
     getWorkerContextAsync,
+    telemetry,
+    streamer,
+    userRegistry,
     setWorkers(nextWorkers: unknown[]) {
       workers = nextWorkers;
     },
@@ -95,6 +119,27 @@ function createServer(initialWorkers: unknown[] = []) {
       };
       server.clients.add(client);
       return client;
+    },
+    // Register a fake dashboard socket the way start() does on connection:
+    // tagged in connectedUsers, plus readOnlyClients when the role is viewer.
+    connectAs(role: "admin" | "operator" | "viewer" | "voice") {
+      const ws = {
+        readyState: WebSocket.OPEN,
+        send: vi.fn(),
+      } as unknown as WebSocket;
+      const internals = server as unknown as {
+        connectedUsers: Map<WebSocket, unknown>;
+        readOnlyClients: Set<WebSocket>;
+      };
+      internals.connectedUsers.set(ws, {
+        id: `u_${role}`,
+        name: role,
+        role,
+        token: `${role}-token`,
+        createdAt: 0,
+      });
+      if (role === "viewer") internals.readOnlyClients.add(ws);
+      return ws;
     },
     triggerRemoval() {
       removalHandler?.();
@@ -210,10 +255,9 @@ describe("WsServer pushState", () => {
     const server = harness.server as unknown as {
       handleMessage: (ws: WebSocket, msg: Record<string, unknown>) => void;
     };
-    const adminWs = {
-      readyState: WebSocket.OPEN,
-      send: vi.fn(),
-    } as unknown as WebSocket;
+    // Registered as admin: privileged types pass the role gate and reach
+    // the field validators.
+    const adminWs = harness.connectAs("admin");
 
     server.handleMessage(adminWs, { type: "spawn", model: "claude;rm", project: "~" });
     server.handleMessage(adminWs, { type: "kill", workerId: "../bad-worker" });
@@ -900,6 +944,115 @@ describe("WsServer pushState", () => {
       exitCode: 0,
       timedOut: false,
       durationMs: 6,
+    });
+  });
+});
+
+describe("WsServer admin gating", () => {
+  // Mirrors REST's requireAdmin routes (api-routes.ts): spawn, kill, revert,
+  // review deletion, user management.
+  const adminOnlyMessages: Record<string, unknown>[] = [
+    { type: "spawn", model: "claude", project: "~" },
+    { type: "kill", workerId: "w1" },
+    { type: "revert", revertId: "r1", revertConfirmation: "abc1234" },
+    { type: "review_dismiss", reviewId: "rev1" },
+    { type: "review_clear_all" },
+    { type: "user_list" },
+    { type: "user_create", userName: "mallory", userRole: "admin" },
+    { type: "user_remove", userId: "u_admin" },
+  ];
+
+  it("rejects privileged messages from operator tokens with an error frame", () => {
+    const harness = createServer([{ id: "w1", status: "idle" }]);
+    const server = harness.server as unknown as {
+      handleMessage: (ws: WebSocket, msg: Record<string, unknown>) => void;
+    };
+    const operatorWs = harness.connectAs("operator");
+
+    for (const msg of adminOnlyMessages) {
+      server.handleMessage(operatorWs, msg);
+    }
+
+    const sent = (operatorWs.send as unknown as { mock: { calls: [string][] } }).mock.calls
+      .map(([raw]) => JSON.parse(raw) as Record<string, unknown>);
+    expect(sent).toEqual(
+      adminOnlyMessages.map(() => ({ type: "error", error: "Admin access required" })),
+    );
+    // The handlers must never run for non-admins.
+    expect(harness.userRegistry.getAll).not.toHaveBeenCalled();
+    expect(harness.userRegistry.createUser).not.toHaveBeenCalled();
+    expect(harness.userRegistry.removeUser).not.toHaveBeenCalled();
+  });
+
+  it("blocks voice tokens from swarm control but still lets them message agents", async () => {
+    const harness = createServer([{ id: "w1", status: "idle" }]);
+    const server = harness.server as unknown as {
+      handleMessage: (ws: WebSocket, msg: Record<string, unknown>) => void;
+    };
+    const voiceWs = harness.connectAs("voice");
+
+    server.handleMessage(voiceWs, { type: "spawn", model: "claude", project: "~" });
+    server.handleMessage(voiceWs, { type: "kill", workerId: "w1" });
+    server.handleMessage(voiceWs, { type: "revert", revertId: "r1", revertConfirmation: "abc1234" });
+    server.handleMessage(voiceWs, { type: "message", workerId: "w1", content: "status update please" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const sent = (voiceWs.send as unknown as { mock: { calls: [string][] } }).mock.calls
+      .map(([raw]) => JSON.parse(raw) as Record<string, unknown>);
+    expect(sent).toEqual([
+      { type: "error", error: "Admin access required" },
+      { type: "error", error: "Admin access required" },
+      { type: "error", error: "Admin access required" },
+    ]);
+    expect(harness.telemetry.sendToWorkerAsync).toHaveBeenCalledWith(
+      "w1",
+      "status update please",
+      expect.objectContaining({ source: "dashboard" }),
+    );
+    expect(harness.streamer.nudge).toHaveBeenCalledWith("w1");
+  });
+
+  it("lets admin tokens through the gate to the real handlers", () => {
+    const harness = createServer([{ id: "w1", status: "idle" }]);
+    const server = harness.server as unknown as {
+      handleMessage: (ws: WebSocket, msg: Record<string, unknown>) => void;
+    };
+    const adminWs = harness.connectAs("admin");
+
+    // Each privileged type passes the role gate and reaches its handler:
+    // kill hits handler validation, revert hits the unwired-history guard,
+    // user_list hits the registry.
+    server.handleMessage(adminWs, { type: "kill" });
+    server.handleMessage(adminWs, { type: "revert", revertId: "r1", revertConfirmation: "abc1234" });
+    server.handleMessage(adminWs, { type: "user_list" });
+
+    const sent = (adminWs.send as unknown as { mock: { calls: [string][] } }).mock.calls
+      .map(([raw]) => JSON.parse(raw) as Record<string, unknown>);
+    expect(sent).toEqual([
+      { type: "error", error: "Missing workerId" },
+      { type: "error", error: "Revert history not available" },
+      { type: "user_list", users: [] },
+    ]);
+    expect(harness.userRegistry.getAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps registered viewers on the read-only error, not the admin error", () => {
+    const harness = createServer([{ id: "w1", status: "idle" }]);
+    const server = harness.server as unknown as {
+      handleMessage: (ws: WebSocket, msg: Record<string, unknown>) => void;
+    };
+    const viewerWs = harness.connectAs("viewer");
+
+    server.handleMessage(viewerWs, { type: "spawn", model: "claude", project: "~" });
+    server.handleMessage(viewerWs, { type: "list" });
+
+    const sent = (viewerWs.send as unknown as { mock: { calls: [string][] } }).mock.calls
+      .map(([raw]) => JSON.parse(raw) as Record<string, unknown>);
+    expect(sent[0]).toEqual({ type: "error", error: "Read-only access" });
+    expect(sent[1]).toEqual({
+      type: "workers",
+      workers: [{ id: "w1", status: "idle" }],
     });
   });
 });

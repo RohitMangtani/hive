@@ -56,6 +56,23 @@ function createLegacyAdminUser(token: string): HiveUser {
   };
 }
 
+/** WS message types that require the admin role  --  mirrors the REST routes
+ *  gated by requireAdmin in api-routes.ts (POST /api/spawn, POST /api/kill,
+ *  POST /api/revert, DELETE /api/reviews[/:id], /api/users). Operator and
+ *  voice tokens can message and drive agents but must not control the swarm,
+ *  revert commits, or manage users. New privileged message types must be
+ *  added here  --  the gate in handleMessage enforces this set uniformly. */
+const ADMIN_ONLY_MESSAGE_TYPES: ReadonlySet<DaemonMessage["type"]> = new Set<DaemonMessage["type"]>([
+  "spawn",
+  "kill",
+  "revert",
+  "review_dismiss",
+  "review_clear_all",
+  "user_list",
+  "user_create",
+  "user_remove",
+]);
+
 /** Satellite connection state */
 interface SatelliteConnection {
   ws: WebSocket;
@@ -163,6 +180,9 @@ export class WsServer {
       async (workerId, content, from) => {
         const sat = this.getSatelliteForWorker(workerId);
         if (!sat) return { ok: false, error: `Satellite for "${workerId}" not connected` };
+        if (sat.ws.readyState !== WebSocket.OPEN) {
+          return { ok: false, error: `Satellite socket for "${workerId}" not open` };
+        }
         const parsed = this.parseSatelliteWorker(workerId)!;
         this.sendToSatellite(sat, {
           type: "satellite_message",
@@ -2000,6 +2020,13 @@ export class WsServer {
       return;
     }
 
+    // Privileged control operations are admin-only on both transports.
+    // Fails closed: a socket with no registered user is treated as non-admin.
+    if (ADMIN_ONLY_MESSAGE_TYPES.has(msg.type) && activeUser?.role !== "admin") {
+      this.send(ws, { type: "error", error: "Admin access required" });
+      return;
+    }
+
     if (msg.project && !isSafePathField(msg.project)) {
       this.send(ws, { type: "error", error: "Invalid project path" });
       return;
@@ -2422,6 +2449,8 @@ export class WsServer {
             msgRemote.lastActionAt = Date.now();
             this.lastWorkersSnapshot = null;
           }
+          // Completion push notifications gate on lastInputSent
+          this.telemetry.markInputSent(msg.workerId, "dashboard");
           break;
         }
 
