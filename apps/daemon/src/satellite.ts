@@ -11,8 +11,9 @@
 import { hostname } from "os";
 import { homedir, platform } from "os";
 import { join, basename } from "path";
-import { unlinkSync, existsSync, writeFileSync, readFileSync, mkdirSync } from "fs";
+import { unlinkSync, existsSync, writeFileSync, readFileSync, mkdirSync, appendFileSync } from "fs";
 import { execFile, execFileSync } from "child_process";
+import { randomBytes } from "crypto";
 import type { MachineCapabilities, UploadedFileRef } from "@hive/types";
 import { detectAndWriteMachineManifest } from "./detect-capabilities.js";
 import { ProcessDiscovery } from "./discovery.js";
@@ -25,7 +26,11 @@ import type { WorkerState } from "./types.js";
 import { resolveExecCwd, runShellExec } from "./shell-exec.js";
 import {
   chooseSatelliteRecoveryAction,
+  chooseSatelliteUpdateGate,
+  isRecentlyFailedHead,
   SATELLITE_STABLE_CONNECTION_MS,
+  SATELLITE_UPDATE_MAX_ATTEMPTS,
+  type SatelliteUpdateAttemptState,
 } from "./satellite-recovery.js";
 import { appendControlPlaneAudit } from "./control-plane-audit.js";
 import { storeUploadedFile } from "./upload-store.js";
@@ -44,6 +49,46 @@ function getGitVersion(): string {
       cwd: repoDir, timeout: 3000, encoding: "utf-8",
     }).trim();
   } catch { return "unknown"; }
+}
+
+/**
+ * Resolve a stable, collision-free machine identity.
+ *
+ * A hostname-only id collides: two machines with the same default hostname
+ * (e.g. two "MacBook-Air" Macs) kick each other offline on the primary and
+ * receive each other's commands. On first run we persist hostname plus a
+ * short random suffix to ~/.hive/machine-id and reuse it forever. A
+ * pre-existing file (including a bare-hostname id from an older install) is
+ * accepted unchanged so established identities never shift across updates.
+ *
+ * Constraints (see ws-server routing + federation auth URL):
+ * - charset stays [a-z0-9-] and never contains ":" — worker ids are
+ *   "machineId:localId" and parse on the FIRST colon
+ * - the suffix is appended AFTER the 24-char hostname truncation so long
+ *   hostnames cannot silently truncate it away and reintroduce collisions
+ */
+export function resolveMachineId(hiveDir: string = join(homedir(), ".hive")): string {
+  const idPath = join(hiveDir, "machine-id");
+  try {
+    if (existsSync(idPath)) {
+      const existing = readFileSync(idPath, "utf-8")
+        .trim().toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 32);
+      if (existing) return existing;
+    }
+  } catch { /* unreadable — regenerate below */ }
+
+  const base = hostname().toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 24) || "satellite";
+  const suffix = randomBytes(2).toString("hex"); // 4 chars, [0-9a-f]
+  const id = `${base}-${suffix}`;
+  try {
+    mkdirSync(hiveDir, { recursive: true });
+    writeFileSync(idPath, `${id}\n`);
+  } catch {
+    // Cannot persist: fall back to the legacy hostname-only id so identity
+    // at least stays stable across restarts on this machine.
+    return base;
+  }
+  return id;
 }
 
 /** Message from satellite → primary */
@@ -114,6 +159,11 @@ interface SatelliteDownMessage {
 
 export class SatelliteClient {
   private readonly machineId: string;
+  /** Version of the code this process is actually running (repo HEAD at
+   *  process start). satellite_update compares this — NOT the pre-pull
+   *  HEAD — to the post-pull HEAD, so a repo pulled while this process was
+   *  stale still restarts, and only true no-op updates are suppressed. */
+  private readonly runningVersion: string;
   private readonly capabilities: MachineCapabilities;
   private readonly telemetry: TelemetryReceiver;
   private readonly discovery: ProcessDiscovery;
@@ -134,9 +184,12 @@ export class SatelliteClient {
   private selfHealAttempts = 0;
   private lastSelfHealAt = 0;
   private selfHealInFlight = false;
+  /** When the primary last pushed its merged fleet view (satellite_all_workers). */
+  private lastPeerSlotsAt = 0;
 
   constructor(primaryUrl: string, token: string, localToken: string, runtimePlatform: LoadedPlatform) {
-    this.machineId = hostname().toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 24) || "satellite";
+    this.machineId = resolveMachineId();
+    this.runningVersion = getGitVersion();
     this.capabilities = detectAndWriteMachineManifest();
     this.runtimePlatform = runtimePlatform;
 
@@ -174,6 +227,7 @@ export class SatelliteClient {
       urls: {
         load: () => this.readPersistedPrimaryUrls(),
         save: (urls, activeUrl) => this.persistPrimaryUrls(urls, activeUrl),
+        appendHistory: (url) => this.appendPrimaryUrlHistory(url),
       },
       hooks: {
         onOpen: () => {
@@ -190,6 +244,7 @@ export class SatelliteClient {
             version: getGitVersion(),
           });
           this.reportWorkers();
+          this.replayChatSubscriptions();
         },
         onMessage: (msg) => {
           this.handleMessage(msg).catch((err) => {
@@ -256,6 +311,48 @@ export class SatelliteClient {
     }
   }
 
+  /**
+   * Append a learned primary URL to the long-lived history file.
+   *
+   * The live candidate list is capped at 5; this LRU (most-recent-last,
+   * capped at 20) keeps every URL the primary ever broadcast so operators
+   * and the rotation-exhaustion fallback have something to consult after a
+   * long offline window. Separate from primary-urls.txt on purpose: that
+   * file is part of the locked rotation pipeline.
+   */
+  private appendPrimaryUrlHistory(url: string): void {
+    const historyPath = join(homedir(), ".hive", "primary-urls-history.txt");
+    try {
+      const existing = existsSync(historyPath)
+        ? readFileSync(historyPath, "utf-8").split("\n").map(l => l.trim()).filter(Boolean)
+        : [];
+      if (existing[existing.length - 1] === url) return;
+      const updated = [...existing.filter(u => u !== url), url].slice(-20);
+      writeFileSync(historyPath, `${updated.join("\n")}\n`);
+    } catch {
+      try { appendFileSync(historyPath, `${url}\n`); } catch { /* best-effort */ }
+    }
+  }
+
+  /**
+   * Re-send full chat history for every active subscription after a
+   * reconnect. Incremental satellite_chat frames emitted while the
+   * federation socket was down are dropped by design (queueing stale frames
+   * is worse), which used to leave a permanent gap in open dashboard tiles
+   * until a manual re-subscribe. The full:true replace path is atomic on the
+   * dashboard side, so replaying history is gap-free and duplicate-free.
+   */
+  private replayChatSubscriptions(): void {
+    for (const prefixedId of this.chatSubs.keys()) {
+      const colonIdx = prefixedId.indexOf(":");
+      const localId = colonIdx >= 0 ? prefixedId.slice(colonIdx + 1) : prefixedId;
+      try {
+        const history = this.streamer.readHistory(localId);
+        this.send({ type: "satellite_chat", workerId: prefixedId, messages: history, full: true });
+      } catch { /* worker may be gone — the primary will unsubscribe */ }
+    }
+  }
+
   start(): void {
     // Start local telemetry server (for hooks from local Claude instances)
     this.telemetry.start();
@@ -287,6 +384,13 @@ export class SatelliteClient {
       this.telemetry.tick();
       this.procMgr.tick();
       this.discovery.scan();
+      // Drop the cross-machine peer view when the primary has not refreshed
+      // it recently (federation down) so stale peers don't linger in
+      // workers.json forever.
+      if (this.lastPeerSlotsAt && Date.now() - this.lastPeerSlotsAt > 120_000) {
+        this.telemetry.setSatelliteSlots([]);
+        this.lastPeerSlotsAt = 0;
+      }
       this.telemetry.writeWorkersFile();
       this.autoPilot?.tick();
       this.reportWorkers();
@@ -391,7 +495,14 @@ export class SatelliteClient {
   }
 
   private send(msg: SatelliteUpMessage): void {
-    this.federation.send(msg);
+    const sent = this.federation.send(msg);
+    if (!sent && (msg.type === "satellite_result" || msg.type === "satellite_context_response")) {
+      // Command results dropped during a reconnect window are gone for good
+      // (queue-and-replay of control-plane replies is deliberately avoided).
+      // Leave an audit trail so a "successful" relay that never produced a
+      // result can be diagnosed from the satellite log.
+      console.log(`[satellite] Dropped ${msg.type}${msg.requestId ? ` (${msg.requestId})` : ""}: federation socket not open`);
+    }
   }
 
   /** Relay an API request to the primary and wait for the response. */
@@ -975,7 +1086,12 @@ All API calls go to \`127.0.0.1:3001\`  --  the local satellite daemon relays th
         // Primary sends the full merged worker list (local + all satellites).
         // Write to ~/.hive/workers.json so the identity hook on this machine
         // shows cross-machine peers in its peer summary.
-        const allWorkers = (msg.workers || []) as Array<{ quadrant?: number; id?: string; tty?: string; projectName?: string; model?: string; machine?: string }>;
+        const allWorkers = (msg.workers || []) as Array<{
+          quadrant?: number; id?: string; pid?: number; tty?: string;
+          project?: string; projectName?: string; status?: string;
+          currentAction?: string | null; lastAction?: string; startedAt?: number;
+          model?: string; machine?: string; machineLabel?: string;
+        }>;
         try {
           const hiveDir = join(homedir(), ".hive");
           if (!existsSync(hiveDir)) mkdirSync(hiveDir, { recursive: true });
@@ -984,6 +1100,44 @@ All API calls go to \`127.0.0.1:3001\`  --  the local satellite daemon relays th
             JSON.stringify({ updatedAt: Date.now(), workers: allWorkers }, null, 2) + "\n"
           );
         } catch { /* non-critical */ }
+
+        // Feed the cross-machine peers into telemetry so the local 3s tick's
+        // writeWorkersFile() MERGES them instead of clobbering workers.json
+        // with the local-only list 3 seconds after every primary push (the
+        // identity hook's peer summary on satellites depends on this).
+        // Two filters protect identity.sh's me-detection:
+        // - skip THIS machine's own workers (already in the local list with
+        //   local ids — duplicating them shows agents as their own peers)
+        // - remap machine "local" (the PRIMARY's workers) to the primary's
+        //   label, since "local" means this machine to the local identity
+        //   hook and a colliding tty would be mistaken for "me"
+        // Peer quadrants are renumbered after the local max so they cannot
+        // collide with locally assigned quadrant numbers.
+        try {
+          const localAll = this.telemetry.getAll();
+          const maxLocalSlot = localAll.reduce((max, w) => Math.max(max, w.quadrant || 0), 0);
+          let nextPeerSlot = Math.max(maxLocalSlot + 1, localAll.length + 1);
+          const peerSlots = allWorkers
+            .filter(w => w.id && w.machine !== this.machineId)
+            .sort((a, b) => (a.quadrant || 99) - (b.quadrant || 99))
+            .map(w => ({
+              quadrant: nextPeerSlot++,
+              id: w.id!,
+              pid: w.pid || 0,
+              tty: w.tty,
+              project: w.project || w.projectName || "?",
+              projectName: w.projectName || "?",
+              status: w.status || "idle",
+              currentAction: w.currentAction ?? null,
+              lastAction: w.lastAction || "",
+              startedAt: w.startedAt || Date.now(),
+              model: w.model || "claude",
+              machine: w.machine === "local" || !w.machine ? (w.machineLabel || "primary") : w.machine,
+              machineLabel: w.machineLabel,
+            }));
+          this.telemetry.setSatelliteSlots(peerSlots);
+          this.lastPeerSlotsAt = Date.now();
+        } catch { /* non-critical — direct write above still landed */ }
 
         // Arrange local terminal windows to match primary-assigned quadrants.
         // Extract workers on this machine, map their prefixed IDs back to
@@ -1097,12 +1251,51 @@ All API calls go to \`127.0.0.1:3001\`  --  the local satellite daemon relays th
 
       case "satellite_update": {
         // Primary tells us to pull latest code and restart.
-        // After pulling, re-run the install script so the process supervisor
-        // config (batch file, Task Scheduler, launchd plist) stays in sync
-        // with the code. This is what makes updates fully automatic.
+        // Hardened flow:
+        // 1. Persisted attempt gate breaks the restart→hello→mismatch→update
+        //    infinite loop when git pull cannot converge on the primary's
+        //    commit (unpushed primary commits, divergent branch).
+        // 2. The pre-pull HEAD is recorded so a bad push can be rolled back.
+        // 3. Dependencies install with a truthful, long-timeout result, and a
+        //    typecheck gate runs BEFORE restarting into the new code; on
+        //    failure the repo rolls back and the primary gets ok:false.
+        // 4. The supervisor config refresh (install script re-run) happens
+        //    detached, matching the satellite_maintenance pattern — running
+        //    it synchronously kills this process mid-handler during its
+        //    runtime cleanup step.
         console.log("[satellite] Received update command  --  pulling latest code...");
         const repoDir = msg.project || join(import.meta.dirname, "..", "..", "..");
+        const updateNow = Date.now();
+        const updateState = this.readUpdateState();
+        const gate = chooseSatelliteUpdateGate({
+          runningVersion: this.runningVersion,
+          state: updateState,
+          now: updateNow,
+        });
+        if (!gate.allowed) {
+          console.log(`[satellite] ${gate.reason}`);
+          this.send({ type: "satellite_result", requestId: msg.requestId, ok: false, error: gate.reason });
+          break;
+        }
+
+        const gitHead = () => new Promise<string>((resolve) => {
+          execFile("git", ["rev-parse", "--short=8", "HEAD"], { cwd: repoDir, timeout: 5_000, encoding: "utf-8" },
+            (err, stdout) => resolve(err ? "unknown" : (stdout || "").trim()));
+        });
+        const recordStuckAttempt = (): number => {
+          const attempts = (updateState?.fromVersion === this.runningVersion ? updateState.attempts : 0) + 1;
+          this.writeUpdateState({
+            fromVersion: this.runningVersion,
+            attempts,
+            lastAttemptAt: updateNow,
+            failedHead: updateState?.failedHead,
+            failedAt: updateState?.failedAt,
+          });
+          return attempts;
+        };
+
         try {
+          const prevHead = await gitHead();
           await new Promise<void>((resolve, reject) => {
             execFile("git", ["pull", "--ff-only"], { cwd: repoDir, timeout: 30_000 },
               (err, stdout) => {
@@ -1110,39 +1303,103 @@ All API calls go to \`127.0.0.1:3001\`  --  the local satellite daemon relays th
                 else { console.log(`[satellite] git pull: ${(stdout || "").trim()}`); resolve(); }
               });
           });
+          const newHead = await gitHead();
+
+          // Version-stuck guard: the pull landed nothing new while this
+          // process already runs that exact commit. Restarting would loop
+          // forever (the hello mismatch re-triggers the update), so record
+          // the attempt and report loudly instead. Comparing the RUNNING
+          // version (captured at process start) to the post-pull HEAD keeps
+          // two legitimate restarts working: a repo pulled while this
+          // process was stale, and the version="unknown" repair path.
+          if (this.runningVersion !== "unknown" && newHead === this.runningVersion) {
+            const attempts = recordStuckAttempt();
+            const giveUpNote = attempts >= SATELLITE_UPDATE_MAX_ATTEMPTS
+              ? " — giving up, manual intervention required (push the primary's commits or fix this satellite's branch)"
+              : "";
+            const stuck = `version stuck at ${this.runningVersion}: git pull did not change HEAD (attempt ${attempts}/${SATELLITE_UPDATE_MAX_ATTEMPTS})${giveUpNote}. The primary may have unpushed commits or this satellite is on a different branch.`;
+            console.log(`[satellite] ${stuck}`);
+            this.send({ type: "satellite_result", requestId: msg.requestId, ok: false, error: stuck });
+            break;
+          }
+
+          // Per-commit failure memo: a commit that recently failed the
+          // validation/install gate is rolled back immediately instead of
+          // re-running the expensive gate on every reconnect.
+          if (newHead !== "unknown" && isRecentlyFailedHead(updateState, newHead, updateNow)) {
+            await this.rollbackRepo(repoDir, prevHead);
+            const memoMsg = `commit ${newHead} recently failed the update validation gate — rolled back to ${prevHead}, will retry after cooldown`;
+            console.log(`[satellite] ${memoMsg}`);
+            this.send({ type: "satellite_result", requestId: msg.requestId, ok: false, error: memoMsg });
+            break;
+          }
+
+          // Install dependencies directly (not via install.sh — its runtime
+          // cleanup kills this process). 10-minute timeout covers a cold npm
+          // cache; failure is treated as FAILURE, because restarting into
+          // code whose dependencies did not install bricks the satellite
+          // under the supervisor's restart loop.
+          const installResult = await this.runDependencyInstall(repoDir);
+          if (!installResult.ok) {
+            await this.rollbackRepo(repoDir, prevHead);
+            await this.runDependencyInstall(repoDir); // best-effort: restore old lockfile's deps
+            this.recordFailedHead(updateState, newHead, updateNow);
+            const errMsg = `update aborted, rolled back to ${prevHead}: ${installResult.error}`;
+            console.log(`[satellite] ${errMsg}`);
+            this.send({ type: "satellite_result", requestId: msg.requestId, ok: false, error: errMsg });
+            break;
+          }
+
+          // Validation gate: typecheck the pulled code BEFORE restarting into
+          // it. A startup-crashing push otherwise puts every satellite into a
+          // supervisor crash loop simultaneously, and the self-heal mechanism
+          // lives inside the crashing process.
+          const validation = await this.validatePulledCode(repoDir);
+          if (!validation.ok) {
+            await this.rollbackRepo(repoDir, prevHead);
+            this.recordFailedHead(updateState, newHead, updateNow);
+            const errMsg = `update rejected, rolled back to ${prevHead}: ${validation.error}`;
+            console.log(`[satellite] ${errMsg}`);
+            this.send({ type: "satellite_result", requestId: msg.requestId, ok: false, error: errMsg });
+            break;
+          }
+
+          // Update converged and validated — clear the attempt state.
+          this.clearUpdateState();
 
           // Re-run install script to update process supervisor config
-          // (batch file restart loop, Task Scheduler triggers, launchd plist).
-          // This ensures the supervisor config always matches the pulled code.
+          // (batch file restart loop, Task Scheduler triggers, launchd
+          // plist). Detached on unix because install.sh's cleanup step kills
+          // this process; the result is reported before spawning it.
           const primaryUrlPath = join(homedir(), ".hive", "primary-url");
           const primaryTokenPath = join(homedir(), ".hive", "primary-token");
           const logPath = join(homedir(), ".hive", "logs", "satellite-update.log");
           const isWindows = process.platform === "win32";
 
+          this.send({ type: "satellite_result", requestId: msg.requestId, ok: true });
+
           if (isWindows) {
             const psCmd = `$u = Get-Content '${primaryUrlPath}' -Raw; $t = Get-Content '${primaryTokenPath}' -Raw; if ($u -and $t) { Set-Location '${repoDir}'; & .\\scripts\\install.ps1 -Connect -Url $u.Trim() -Token $t.Trim() } *> '${logPath}'`;
             await new Promise<void>((resolve) => {
               execFile("powershell", ["-NoProfile", "-Command", psCmd],
-                { timeout: 60_000 }, (err) => {
+                { timeout: 600_000 }, (err) => {
                   if (err) console.log(`[satellite] install.ps1 re-run warning: ${err.message.slice(0, 100)}`);
                   else console.log("[satellite] install.ps1 re-run complete");
-                  resolve(); // non-fatal — the pull already landed
+                  resolve(); // config refresh is best-effort — code is already validated
                 });
             });
           } else {
-            const bashCmd = `cd '${repoDir}' && PRIMARY_URL=$(cat '${primaryUrlPath}' 2>/dev/null) && PRIMARY_TOKEN=$(cat '${primaryTokenPath}' 2>/dev/null) && [ -n "$PRIMARY_URL" ] && [ -n "$PRIMARY_TOKEN" ] && bash scripts/install.sh --connect "$PRIMARY_URL" "$PRIMARY_TOKEN" > '${logPath}' 2>&1`;
+            const bashCmd = `cd '${repoDir}' && PRIMARY_URL=$(cat '${primaryUrlPath}' 2>/dev/null) && PRIMARY_TOKEN=$(cat '${primaryTokenPath}' 2>/dev/null) && [ -n "$PRIMARY_URL" ] && [ -n "$PRIMARY_TOKEN" ] && nohup bash scripts/install.sh --connect "$PRIMARY_URL" "$PRIMARY_TOKEN" > '${logPath}' 2>&1 &`;
             const shell = existsSync("/bin/zsh") ? "/bin/zsh" : "/bin/bash";
             await new Promise<void>((resolve) => {
               execFile(shell, ["-lc", bashCmd],
-                { timeout: 60_000 }, (err) => {
-                  if (err) console.log(`[satellite] install.sh re-run warning: ${err.message.slice(0, 100)}`);
-                  else console.log("[satellite] install.sh re-run complete");
+                { timeout: 10_000 }, (err) => {
+                  if (err) console.log(`[satellite] install.sh re-run spawn warning: ${err.message.slice(0, 100)}`);
+                  else console.log("[satellite] install.sh re-run started (detached)");
                   resolve();
                 });
             });
           }
-
-          this.send({ type: "satellite_result", requestId: msg.requestId, ok: true });
           // Ensure the launchd plist is loaded before exiting so the supervisor
           // can restart us. Without this, process.exit(0) is a one-way trip if
           // the plist was unloaded or the install script re-run failed.
@@ -1193,8 +1450,12 @@ All API calls go to \`127.0.0.1:3001\`  --  the local satellite daemon relays th
           console.log("[satellite] Restarting in 2 seconds...");
           setTimeout(() => process.exit(0), 2000);
         } catch (err) {
+          // git pull (or another pre-validation step) failed. Record the
+          // attempt so repeated hello-triggered updates back off instead of
+          // re-running a doomed pull every reconnect.
+          const attempts = recordStuckAttempt();
           const errMsg = err instanceof Error ? err.message : String(err);
-          console.log(`[satellite] Update failed: ${errMsg}`);
+          console.log(`[satellite] Update failed (attempt ${attempts}/${SATELLITE_UPDATE_MAX_ATTEMPTS}): ${errMsg}`);
           this.send({ type: "satellite_result", requestId: msg.requestId, ok: false, error: errMsg });
         }
         break;
@@ -1256,6 +1517,117 @@ All API calls go to \`127.0.0.1:3001\`  --  the local satellite daemon relays th
       default:
         break;
     }
+  }
+
+  // ── satellite_update support ──────────────────────────────────────────
+
+  private readUpdateState(): SatelliteUpdateAttemptState | null {
+    try {
+      const raw = readFileSync(join(homedir(), ".hive", "update-state.json"), "utf-8");
+      const parsed = JSON.parse(raw) as SatelliteUpdateAttemptState;
+      if (typeof parsed?.fromVersion === "string" && typeof parsed?.attempts === "number") {
+        return parsed;
+      }
+    } catch { /* missing or corrupt — treat as no prior attempts */ }
+    return null;
+  }
+
+  private writeUpdateState(state: SatelliteUpdateAttemptState): void {
+    try {
+      const hiveDir = join(homedir(), ".hive");
+      mkdirSync(hiveDir, { recursive: true });
+      writeFileSync(join(hiveDir, "update-state.json"), JSON.stringify(state, null, 2) + "\n");
+    } catch { /* best-effort — worst case the gate just never engages */ }
+  }
+
+  private clearUpdateState(): void {
+    try { unlinkSync(join(homedir(), ".hive", "update-state.json")); } catch { /* absent */ }
+  }
+
+  /** Remember that a pulled commit failed the validation/install gate so the
+   *  next satellite_update within the cooldown skips the expensive re-run. */
+  private recordFailedHead(prev: SatelliteUpdateAttemptState | null, head: string, now: number): void {
+    this.writeUpdateState({
+      fromVersion: prev?.fromVersion ?? this.runningVersion,
+      attempts: prev?.fromVersion === this.runningVersion ? prev.attempts : 0,
+      lastAttemptAt: prev?.fromVersion === this.runningVersion ? prev.lastAttemptAt : 0,
+      failedHead: head,
+      failedAt: now,
+    });
+  }
+
+  /** Roll the repo back to a known-good commit after a failed update.
+   *  Uses `git reset --keep` (not --hard) so intentional uncommitted local
+   *  changes survive. If --keep refuses (a dirty file differs between the
+   *  commits), the tree is left as pulled — the running process is still on
+   *  the old code either way, but a supervisor restart would boot the
+   *  unvalidated code, so the refusal is logged loudly. */
+  private rollbackRepo(repoDir: string, head: string): Promise<boolean> {
+    if (!head || head === "unknown") return Promise.resolve(false);
+    return new Promise((resolve) => {
+      execFile("git", ["reset", "--keep", head], { cwd: repoDir, timeout: 15_000 }, (err) => {
+        if (err) {
+          console.log(`[satellite] Rollback to ${head} FAILED (${err.message.slice(0, 120)}) — tree left as pulled; a supervisor restart would boot unvalidated code`);
+          resolve(false);
+        } else {
+          console.log(`[satellite] Rolled back repo to ${head}`);
+          resolve(true);
+        }
+      });
+    });
+  }
+
+  /** npm install with a cold-cache-sized timeout and a truthful result. */
+  private runDependencyInstall(repoDir: string): Promise<{ ok: boolean; error?: string }> {
+    return new Promise((resolve) => {
+      execFile("npm", ["install", "--no-audit", "--no-fund"], { cwd: repoDir, timeout: 600_000 }, (err, _stdout, stderr) => {
+        if (err) {
+          const killed = (err as { killed?: boolean }).killed === true;
+          const detail = killed ? "timed out after 600s" : (stderr || err.message).slice(0, 300);
+          resolve({ ok: false, error: `npm install failed: ${detail}` });
+        } else {
+          resolve({ ok: true });
+        }
+      });
+    });
+  }
+
+  /** Typecheck the pulled code before restarting into it.
+   *
+   *  tsx happily runs type-bad code, so this gate is stricter than the
+   *  runtime strictly needs — a real type error gets reported upstream as
+   *  ok:false with the first errors attached, instead of every satellite
+   *  crash-looping under its supervisor at the same time.
+   *
+   *  Infrastructure failures (npx/tsc missing, timeout) FAIL OPEN with a
+   *  loud log: a broken validator must never be able to freeze the whole
+   *  fleet on old code. */
+  private validatePulledCode(repoDir: string): Promise<{ ok: boolean; error?: string }> {
+    return new Promise((resolve) => {
+      const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+      execFile(npx, ["tsc", "--noEmit"], {
+        cwd: join(repoDir, "apps", "daemon"),
+        timeout: 180_000,
+        encoding: "utf-8",
+      }, (err, stdout, stderr) => {
+        if (!err) { resolve({ ok: true }); return; }
+        const output = `${stdout || ""}\n${stderr || ""}`;
+        if (/error TS\d+/.test(output)) {
+          const firstErrors = output
+            .split("\n")
+            .filter((line) => line.includes("error TS"))
+            .slice(0, 5)
+            .join(" | ");
+          resolve({ ok: false, error: `typecheck failed: ${firstErrors.slice(0, 400)}` });
+          return;
+        }
+        const killed = (err as { killed?: boolean }).killed === true;
+        const spawnFailed = (err as NodeJS.ErrnoException).code === "ENOENT";
+        const why = spawnFailed ? "npx not found" : killed ? "timed out" : err.message.slice(0, 120);
+        console.log(`[satellite] Update validation gate could not run (${why}) — proceeding WITHOUT validation`);
+        resolve({ ok: true });
+      });
+    });
   }
 
   stop(): void {

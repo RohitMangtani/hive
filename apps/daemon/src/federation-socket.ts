@@ -80,6 +80,15 @@ export interface FederationSocketHooks<TIncoming, TOutgoing> {
 export interface FederationUrlStore {
   load(): string[];
   save(urls: string[], activeUrl: string): void;
+  /**
+   * Optional append-only history of every primary URL ever learned.
+   *
+   * The live candidate list is capped at 5, so a long offline window can
+   * evict URLs that later turn out to be the only working ones. Persisting
+   * the full history (small LRU on the caller's side) gives operators and
+   * the exhaustion fallback something to fall back on.
+   */
+  appendHistory?(url: string): void;
 }
 
 /**
@@ -93,6 +102,13 @@ export interface FederationSocketOptions<TIncoming, TOutgoing> {
   heartbeatIntervalMs: number;
   heartbeatTimeoutMs: number;
   maxReconnectDelayMs?: number;
+  /**
+   * How long a socket may sit in CONNECTING before the transport gives up on
+   * it. Without this, a black-holed connection (tunnel edge accepts TCP but
+   * the upgrade never completes) stalls reconnect and URL rotation until the
+   * OS-level timeout fires (60-130s).
+   */
+  connectTimeoutMs?: number;
   socketFactory?: (url: string) => FederationSocketLike;
   parseMessage?: (raw: string) => TIncoming;
   urls: FederationUrlStore;
@@ -126,6 +142,11 @@ export class FederationSocketClient<TIncoming extends { type?: string }, TOutgoi
   private readonly urls: FederationUrlStore;
   private readonly hooks: FederationSocketHooks<TIncoming, TOutgoing>;
 
+  private readonly connectTimeoutMs: number;
+  /** The URL this transport was constructed with — the install-time URL on
+   *  satellites, since the supervisor config bakes it into the launch args. */
+  private readonly installUrl: string;
+
   private currentPrimaryUrl: string;
   private primaryUrlCandidates: string[] = [];
   private primaryUrlIndex = 0;
@@ -133,19 +154,23 @@ export class FederationSocketClient<TIncoming extends { type?: string }, TOutgoi
   private reconnectDelayMs = 1_000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private connectedAt = 0;
   private lastInboundAt = 0;
   private stopped = false;
   private pendingDisconnectReason: FederationDisconnectReason = "closed";
+  private reconnectAttemptsSinceOpen = 0;
 
   constructor(options: FederationSocketOptions<TIncoming, TOutgoing>) {
     this.currentPrimaryUrl = this.normalizePrimaryUrl(options.primaryUrl);
+    this.installUrl = this.currentPrimaryUrl;
     this.token = options.token;
     this.satelliteId = options.satelliteId;
     this.stableConnectionMs = options.stableConnectionMs;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs;
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs;
     this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
+    this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000;
     this.socketFactory = options.socketFactory ?? ((url) => new WebSocket(url));
     this.parseMessage = options.parseMessage ?? ((raw) => JSON.parse(raw) as TIncoming);
     this.urls = options.urls;
@@ -171,6 +196,7 @@ export class FederationSocketClient<TIncoming extends { type?: string }, TOutgoi
     this.stopped = true;
     this.clearReconnectTimer();
     this.clearHeartbeatTimer();
+    this.clearConnectTimer();
     const active = this.socket;
     this.socket = null;
     if (active) {
@@ -185,10 +211,14 @@ export class FederationSocketClient<TIncoming extends { type?: string }, TOutgoi
    * Missing an opportunistic send is safer than queueing stale control-plane
    * traffic in memory. The existing higher-level logic already handles retries
    * for the operations that need them.
+   *
+   * Returns true only when the frame was handed to an OPEN socket, so callers
+   * can report dropped sends truthfully instead of assuming delivery.
    */
-  send(message: TOutgoing): void {
-    if (this.socket?.readyState !== WebSocket.OPEN) return;
+  send(message: TOutgoing): boolean {
+    if (this.socket?.readyState !== WebSocket.OPEN) return false;
     this.socket.send(JSON.stringify(message));
+    return true;
   }
 
   /**
@@ -201,6 +231,10 @@ export class FederationSocketClient<TIncoming extends { type?: string }, TOutgoi
   rememberPrimaryUrl(url: string, prioritize = false): void {
     const normalized = this.normalizePrimaryUrl(url);
     if (!normalized) return;
+
+    try {
+      this.urls.appendHistory?.(normalized);
+    } catch { /* history is best-effort */ }
 
     const merged = [
       ...(prioritize ? [normalized] : []),
@@ -239,14 +273,30 @@ export class FederationSocketClient<TIncoming extends { type?: string }, TOutgoi
     const socket = this.socketFactory(url);
     this.socket = socket;
 
+    // Connect/handshake timeout: a socket stuck in CONNECTING has no timer of
+    // its own (the heartbeat watchdog only starts on "open"), so without this
+    // a black-holed dial stalls reconnect and URL rotation for the OS-level
+    // TCP timeout. Terminating feeds the normal close → reconnect path.
+    this.clearConnectTimer();
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      if (this.socket !== socket || this.stopped) return;
+      if (socket.readyState === WebSocket.OPEN) return;
+      console.log(`[federation] Connect attempt to ${this.currentPrimaryUrl} timed out after ${Math.round(this.connectTimeoutMs / 1000)}s`);
+      if (typeof socket.terminate === "function") socket.terminate();
+      else socket.close();
+    }, this.connectTimeoutMs);
+
     socket.on("open", () => {
       if (this.socket !== socket || this.stopped) {
         socket.close();
         return;
       }
+      this.clearConnectTimer();
       this.connectedAt = Date.now();
       this.lastInboundAt = this.connectedAt;
       this.reconnectDelayMs = 1_000;
+      this.reconnectAttemptsSinceOpen = 0;
       this.pendingDisconnectReason = "closed";
       this.startHeartbeatLoop();
       this.hooks.onOpen();
@@ -268,6 +318,7 @@ export class FederationSocketClient<TIncoming extends { type?: string }, TOutgoi
     socket.on("close", () => {
       if (this.socket !== socket) return;
       this.socket = null;
+      this.clearConnectTimer();
       this.clearHeartbeatTimer();
       this.handleDisconnect(this.pendingDisconnectReason).catch((err) => {
         console.log(`[federation] Disconnect handler error: ${err instanceof Error ? err.message : String(err)}`);
@@ -306,6 +357,8 @@ export class FederationSocketClient<TIncoming extends { type?: string }, TOutgoi
   private scheduleReconnectInternal(rotateUrl: boolean): void {
     if (this.stopped || this.reconnectTimer) return;
     const rotatedUrl = rotateUrl ? this.rotatePrimaryUrlCandidate() : false;
+    this.reconnectAttemptsSinceOpen += 1;
+    this.handleRotationExhaustion();
     const delayMs = this.reconnectDelayMs;
     this.hooks.onReconnectScheduled?.({
       nextUrl: this.currentPrimaryUrl,
@@ -338,10 +391,46 @@ export class FederationSocketClient<TIncoming extends { type?: string }, TOutgoi
     }, this.heartbeatIntervalMs);
   }
 
+  /**
+   * Out-of-band recovery for the ephemeral-tunnel orphan case.
+   *
+   * When the primary's tunnel restarts with a brand-new URL while every
+   * satellite is disconnected, all persisted candidates are dead and the
+   * normal rotation can never recover. Once a full cycle through the
+   * candidates has failed, log an explicit operator runbook line and, if the
+   * install-time URL was evicted from the capped candidate list, retry it as
+   * an extra fallback. This is purely additive: the locked rotation behavior
+   * is untouched for every attempt where candidates still work.
+   */
+  private handleRotationExhaustion(): void {
+    const cycleLen = Math.max(this.primaryUrlCandidates.length, 1) + 1;
+    if (this.reconnectAttemptsSinceOpen === 0 || this.reconnectAttemptsSinceOpen % cycleLen !== 0) return;
+
+    console.log(`[federation] Exhausted all ${this.primaryUrlCandidates.length || 1} known primary URL candidate(s) without connecting (${this.reconnectAttemptsSinceOpen} attempts since last successful connection).`);
+    console.log(`[federation] Runbook: the primary's tunnel URL may have rotated while this satellite was offline. On the primary run: cat ~/.hive/tunnel-url.txt — then on this machine run: bash scripts/install.sh --connect <new-url> \"$(cat ~/.hive/primary-token)\"`);
+
+    if (
+      this.installUrl &&
+      this.currentPrimaryUrl !== this.installUrl &&
+      !this.primaryUrlCandidates.includes(this.installUrl)
+    ) {
+      console.log(`[federation] Also retrying the original install-time URL: ${this.installUrl}`);
+      // connect() folds currentPrimaryUrl back into the candidate list, so a
+      // working install URL re-enters rotation naturally.
+      this.currentPrimaryUrl = this.installUrl;
+    }
+  }
+
   private clearReconnectTimer(): void {
     if (!this.reconnectTimer) return;
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+  }
+
+  private clearConnectTimer(): void {
+    if (!this.connectTimer) return;
+    clearTimeout(this.connectTimer);
+    this.connectTimer = null;
   }
 
   private clearHeartbeatTimer(): void {

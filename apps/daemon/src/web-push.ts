@@ -1,5 +1,5 @@
 import webpush from "web-push";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -30,24 +30,51 @@ interface StoredSub {
 export class WebPushManager {
   private vapid: VapidKeys;
   private subs: StoredSub[] = [];
+  /** True when VAPID setup failed even with fresh keys — push is disabled
+   *  for this run instead of taking the daemon down. */
+  private disabled = false;
 
   constructor() {
     this.vapid = this.loadOrGenerateVapid();
     this.subs = this.loadSubs();
 
-    webpush.setVapidDetails(
-      "https://github.com/RohitMangtani/hive",
-      this.vapid.publicKey,
-      this.vapid.privateKey,
-    );
+    // setVapidDetails throws on malformed key material. A vapid.json that
+    // parses but holds truncated/invalid keys used to kill the daemon at
+    // startup (the constructor is called with no try/catch), which launchd
+    // then turned into a crash loop until someone deleted the file.
+    // Regenerate once on failure; if even fresh keys fail, disable push.
+    if (!this.applyVapid(this.vapid)) {
+      console.log("[web-push] Stored VAPID keys rejected — regenerating");
+      this.vapid = this.generateAndStoreVapid();
+      if (!this.applyVapid(this.vapid)) {
+        this.disabled = true;
+        console.log("[web-push] VAPID setup failed twice — web push disabled for this run");
+      }
+    }
 
-    console.log(
-      `  Web Push: ${this.subs.length} subscription(s), VAPID key ready`,
-    );
+    if (!this.disabled) {
+      console.log(
+        `  Web Push: ${this.subs.length} subscription(s), VAPID key ready`,
+      );
+    }
+  }
+
+  private applyVapid(vapid: VapidKeys): boolean {
+    try {
+      webpush.setVapidDetails(
+        "https://github.com/RohitMangtani/hive",
+        vapid.publicKey,
+        vapid.privateKey,
+      );
+      return true;
+    } catch (err) {
+      console.log(`[web-push] setVapidDetails rejected keys: ${err instanceof Error ? err.message : err}`);
+      return false;
+    }
   }
 
   getPublicKey(): string {
-    return this.vapid.publicKey;
+    return this.disabled ? "" : this.vapid.publicKey;
   }
 
   addSubscription(sub: PushSubscription, label?: string): void {
@@ -79,7 +106,7 @@ export class WebPushManager {
     body: string,
     options?: { tag?: string; data?: Record<string, unknown> },
   ): Promise<{ sent: number; failed: number }> {
-    if (this.subs.length === 0) return { sent: 0, failed: 0 };
+    if (this.disabled || this.subs.length === 0) return { sent: 0, failed: 0 };
 
     const payload = JSON.stringify({
       title,
@@ -122,19 +149,41 @@ export class WebPushManager {
 
     if (existsSync(VAPID_PATH)) {
       try {
-        return JSON.parse(readFileSync(VAPID_PATH, "utf-8"));
+        const parsed = JSON.parse(readFileSync(VAPID_PATH, "utf-8")) as Partial<VapidKeys>;
+        if (
+          typeof parsed.publicKey === "string" && parsed.publicKey.length > 0 &&
+          typeof parsed.privateKey === "string" && parsed.privateKey.length > 0
+        ) {
+          // The private key must not be world-readable. Fix permissions on
+          // files written by older versions ({ mode } only applies when the
+          // file is first created).
+          try { chmodSync(VAPID_PATH, 0o600); } catch { /* best-effort */ }
+          return { publicKey: parsed.publicKey, privateKey: parsed.privateKey };
+        }
+        console.log("[web-push] vapid.json parses but is missing key material — regenerating");
       } catch {
         // Corrupted  --  regenerate
       }
     }
 
+    return this.generateAndStoreVapid();
+  }
+
+  private generateAndStoreVapid(): VapidKeys {
     const keys = webpush.generateVAPIDKeys();
     const vapid: VapidKeys = {
       publicKey: keys.publicKey,
       privateKey: keys.privateKey,
     };
-    writeFileSync(VAPID_PATH, JSON.stringify(vapid, null, 2) + "\n");
-    console.log(`  Generated new VAPID keys → ${VAPID_PATH}`);
+    try {
+      writeFileSync(VAPID_PATH, JSON.stringify(vapid, null, 2) + "\n", { mode: 0o600 });
+      try { chmodSync(VAPID_PATH, 0o600); } catch { /* best-effort */ }
+      console.log(`  Generated new VAPID keys → ${VAPID_PATH}`);
+    } catch (err) {
+      // Keys still work in-memory for this run; persisting can be retried
+      // on the next start.
+      console.log(`[web-push] Could not persist VAPID keys: ${err instanceof Error ? err.message : err}`);
+    }
     return vapid;
   }
 
@@ -151,7 +200,10 @@ export class WebPushManager {
 
   private saveSubs(): void {
     try {
-      writeFileSync(SUBS_PATH, JSON.stringify(this.subs, null, 2) + "\n");
+      // Push endpoints + auth secrets are capability tokens — keep them
+      // out of reach of other local users, same as vapid.json.
+      writeFileSync(SUBS_PATH, JSON.stringify(this.subs, null, 2) + "\n", { mode: 0o600 });
+      try { chmodSync(SUBS_PATH, 0o600); } catch { /* best-effort */ }
     } catch {
       /* non-critical */
     }

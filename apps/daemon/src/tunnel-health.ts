@@ -7,7 +7,7 @@
  * Only runs on the primary (satellite mode has no tunnel).
  */
 
-import { execFileSync, spawn } from "child_process";
+import { execFile, spawn } from "child_process";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -28,19 +28,34 @@ export class TunnelHealthMonitor {
   private lastCheckAt = 0;
   private restartCount = 0;
   private lastRestartAt = 0;
+  /** Guard so only one async probe/restart sequence runs at a time. */
+  private checkInFlight = false;
 
-  /** Called every 3s tick. Only acts every CHECK_INTERVAL_MS. */
+  /** Called every 3s tick. Only acts every CHECK_INTERVAL_MS.
+   *
+   *  The actual probes run async: a curl with a multi-second timeout used to
+   *  execute synchronously here, blocking discovery, telemetry, and WS
+   *  serving for the duration. */
   tick(): void {
     const now = Date.now();
     if (now - this.lastCheckAt < CHECK_INTERVAL_MS) return;
     if (now - this.lastRestartAt < POST_RESTART_COOLDOWN_MS) return;
+    if (this.checkInFlight) return;
     this.lastCheckAt = now;
 
     if (!this.isTunnelExpected()) return;
-    if (this.isTunnelAlive()) return;
 
-    console.log(`[tunnel-health] Tunnel process dead. Restarting... (restart #${this.restartCount + 1})`);
-    this.restart();
+    this.checkInFlight = true;
+    this.isTunnelAlive()
+      .then(async (alive) => {
+        if (alive) return;
+        // Re-check the cooldown — the probe itself may have taken seconds.
+        if (Date.now() - this.lastRestartAt < POST_RESTART_COOLDOWN_MS) return;
+        console.log(`[tunnel-health] Tunnel process dead. Restarting... (restart #${this.restartCount + 1})`);
+        await this.restart();
+      })
+      .catch(() => { /* probe errors already treated as trust-PID */ })
+      .finally(() => { this.checkInFlight = false; });
   }
 
   /** A tunnel is expected if we have a tunnel PID file or URL file. */
@@ -49,8 +64,8 @@ export class TunnelHealthMonitor {
   }
 
   /** Check if the tunnel is actually working — not just PID alive but reachable. */
-  private isTunnelAlive(): boolean {
-    // Step 1: check if PID is alive
+  private async isTunnelAlive(): Promise<boolean> {
+    // Step 1: check if PID is alive (cheap and synchronous: tiny file read + signal 0)
     try {
       const pidStr = readFileSync(TUNNEL_PID_FILE, "utf-8").trim();
       const pid = parseInt(pidStr, 10);
@@ -63,62 +78,75 @@ export class TunnelHealthMonitor {
     // Step 2: verify the tunnel is actually functional (not just process alive).
     // ngrok can be running but broken (ERR_6030: multiple endpoints, ERR_8012: etc.)
     // Check the ngrok local API to verify tunnel status.
-    try {
-      const raw = execFileSync("curl", ["-s", "--connect-timeout", "2", "http://127.0.0.1:4040/api/tunnels"], {
-        encoding: "utf-8",
-        timeout: 5000,
-      });
-      const data = JSON.parse(raw);
-      if (!data.tunnels || data.tunnels.length === 0) {
-        console.log("[tunnel-health] ngrok running but no active tunnels — restarting");
-        return false;
-      }
-      return true;
-    } catch {
-      // ngrok API not responding — might be cloudflared, check URL reachability instead
+    const ngrokApi = await this.curl(["-s", "--connect-timeout", "2", "http://127.0.0.1:4040/api/tunnels"], 5000);
+    if (ngrokApi !== null) {
       try {
-        const url = readFileSync(TUNNEL_URL_FILE, "utf-8").trim();
-        if (!url) return true; // no URL to check, trust PID
-        const status = execFileSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--connect-timeout", "3", url + "/health"], {
-          encoding: "utf-8",
-          timeout: 8000,
-        }).trim();
-        // Any HTTP response (even 426 Upgrade Required) means tunnel works
-        if (status !== "000") return true;
-        console.log("[tunnel-health] Tunnel URL unreachable (status 000) — restarting");
-        return false;
-      } catch {
-        return true; // can't verify, trust PID
-      }
+        const data = JSON.parse(ngrokApi);
+        if (!data.tunnels || data.tunnels.length === 0) {
+          console.log("[tunnel-health] ngrok running but no active tunnels — restarting");
+          return false;
+        }
+        return true;
+      } catch { /* unparseable — fall through to URL check */ }
     }
+
+    // ngrok API not responding — might be cloudflared, check URL reachability instead
+    let url = "";
+    try {
+      url = readFileSync(TUNNEL_URL_FILE, "utf-8").trim();
+    } catch {
+      return true; // can't verify, trust PID
+    }
+    if (!url) return true; // no URL to check, trust PID
+    const status = await this.curl(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--connect-timeout", "3", url + "/health"], 8000);
+    if (status === null) return true; // can't verify, trust PID
+    // Any HTTP response (even 426 Upgrade Required) means tunnel works
+    if (status.trim() !== "000") return true;
+    console.log("[tunnel-health] Tunnel URL unreachable (status 000) — restarting");
+    return false;
   }
 
-  /** Restart the tunnel. Kills ALL existing tunnel processes first to prevent
+  /** Async curl helper. Resolves null when curl itself fails. */
+  private curl(args: string[], timeoutMs: number): Promise<string | null> {
+    return new Promise((resolve) => {
+      execFile("curl", args, { encoding: "utf-8", timeout: timeoutMs }, (err, stdout) => {
+        resolve(err ? null : stdout);
+      });
+    });
+  }
+
+  /** Kill existing tunnel processes, matched on their full spawn signatures.
+   *  A bare `pkill -f ngrok` also SIGTERMs unrelated processes whose command
+   *  line merely contains the substring — e.g. `tail -f ~/.hive/ngrok.log`
+   *  or an editor with ngrok.log open. The patterns below match the exact
+   *  spawn signatures used by start.sh and this module. */
+  private async killTunnelProcesses(): Promise<void> {
+    const run = (cmd: string, cmdArgs: string[]) => new Promise<void>((resolve) => {
+      execFile(cmd, cmdArgs, { timeout: 5000 }, () => resolve()); // non-zero exit = nothing matched — fine
+    });
+    if (process.platform === "win32") {
+      await run("taskkill", ["/IM", "ngrok.exe", "/F"]);
+      await run("taskkill", ["/IM", "cloudflared.exe", "/F"]);
+      return;
+    }
+    await run("pkill", ["-f", "ngrok http 3002"]);
+    await run("pkill", ["-f", "cloudflared tunnel --url"]);
+  }
+
+  /** Restart the tunnel. Kills existing tunnel processes first to prevent
    *  the "multiple endpoints" race (ERR_NGROK_6030), then starts fresh. */
-  private restart(): void {
+  private async restart(): Promise<void> {
     this.restartCount++;
     this.lastRestartAt = Date.now();
 
-    // Kill ALL existing ngrok/cloudflared processes to prevent duplicates.
+    // Kill existing ngrok/cloudflared tunnel processes to prevent duplicates.
     // This is the fix for ERR_NGROK_6030 ("multiple endpoints but not all
     // have pooling enabled") which happens when a stale process lingers.
-    try {
-      if (process.platform === "win32") {
-        execFileSync("taskkill", ["/IM", "ngrok.exe", "/F"], { timeout: 5000, stdio: "pipe" });
-      } else {
-        execFileSync("pkill", ["-f", "ngrok"], { timeout: 5000, stdio: "pipe" });
-      }
-    } catch { /* no ngrok running — fine */ }
-    try {
-      if (process.platform === "win32") {
-        execFileSync("taskkill", ["/IM", "cloudflared.exe", "/F"], { timeout: 5000, stdio: "pipe" });
-      } else {
-        execFileSync("pkill", ["-f", "cloudflared"], { timeout: 5000, stdio: "pipe" });
-      }
-    } catch { /* no cloudflared running — fine */ }
+    await this.killTunnelProcesses();
 
-    // Wait a moment for processes to fully die before starting new ones
-    try { execFileSync("sleep", ["2"], { timeout: 5000 }); } catch { /* Windows */ }
+    // Wait a moment for processes to fully die before starting new ones —
+    // without blocking the event loop the way the old execFileSync sleep did.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
     // Read stable domain if configured
     let ngrokDomain = "";
@@ -127,7 +155,7 @@ export class TunnelHealthMonitor {
     } catch { /* none */ }
 
     // Try ngrok
-    if (this.hasCommand("ngrok")) {
+    if (await this.hasCommand("ngrok")) {
       try {
         const args = ngrokDomain
           ? ["http", "3002", "--domain", ngrokDomain, "--log=stdout"]
@@ -159,7 +187,7 @@ export class TunnelHealthMonitor {
     }
 
     // Try cloudflared
-    if (this.hasCommand("cloudflared")) {
+    if (await this.hasCommand("cloudflared")) {
       try {
         const child = spawn("cloudflared", [
           "tunnel", "--url", "http://localhost:3002", "--no-autoupdate",
@@ -191,22 +219,22 @@ export class TunnelHealthMonitor {
   }
 
   private captureNgrokUrl(): void {
-    try {
-      const raw = execFileSync("curl", ["-s", "http://127.0.0.1:4040/api/tunnels"], {
-        encoding: "utf-8",
-        timeout: 5000,
-      });
-      const data = JSON.parse(raw);
-      for (const t of data.tunnels || []) {
-        if (t.public_url && t.public_url.startsWith("https://")) {
-          writeFileSync(TUNNEL_URL_FILE, t.public_url);
-          console.log(`[tunnel-health] Tunnel URL captured: ${t.public_url}`);
-          return;
+    this.curl(["-s", "http://127.0.0.1:4040/api/tunnels"], 5000).then((raw) => {
+      try {
+        if (raw === null) throw new Error("curl failed");
+        const data = JSON.parse(raw);
+        for (const t of data.tunnels || []) {
+          if (t.public_url && t.public_url.startsWith("https://")) {
+            writeFileSync(TUNNEL_URL_FILE, t.public_url);
+            console.log(`[tunnel-health] Tunnel URL captured: ${t.public_url}`);
+            return;
+          }
         }
+        console.log("[tunnel-health] Failed to capture ngrok URL — will retry next tick");
+      } catch {
+        console.log("[tunnel-health] Failed to capture ngrok URL — will retry next tick");
       }
-    } catch {
-      console.log("[tunnel-health] Failed to capture ngrok URL — will retry next tick");
-    }
+    });
   }
 
   private captureCloudflaredUrl(): void {
@@ -222,16 +250,12 @@ export class TunnelHealthMonitor {
     }
   }
 
-  private hasCommand(cmd: string): boolean {
-    try {
-      execFileSync(process.platform === "win32" ? "where" : "which", [cmd], {
+  private hasCommand(cmd: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      execFile(process.platform === "win32" ? "where" : "which", [cmd], {
         timeout: 3000,
         encoding: "utf-8",
-        stdio: "pipe",
-      });
-      return true;
-    } catch {
-      return false;
-    }
+      }, (err) => resolve(!err));
+    });
   }
 }
